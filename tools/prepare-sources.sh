@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run from Debian with CMake, Ninja, Clang, binutils-mips-linux-gnu, Python/venv and Git.
+# Prepares the generated sources (run by the build-*.sh scripts; can also be run by hand: tools/prepare-sources.sh us).
+# Needs CMake, Ninja, Clang, binutils-mips-linux-gnu, Python 3 and Git.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -10,28 +11,51 @@ case "$region" in
     *) echo 'Expected us or jp' >&2; exit 2 ;;
 esac
 mkdir -p "$parent" .work
-printf '%s  %s\n' "$sha" "other_projects/$rom" | sha1sum -c -
-# The decomp archive may carry a browser's duplicate-download suffix; either name is accepted, the hash decides.
-decomp_zip='other_projects/pokestadiumgs-master.zip'
-[[ -f "$decomp_zip" ]] || decomp_zip='other_projects/pokestadiumgs-master(1).zip'
-printf '%s  %s\n' bc655898f627dbd239f3384721aa47c6ba9f51155979091b25a849c2decfc1ff "$decomp_zip" \
-    f8117dbc84077b3604e0789830f0338e0e40b23e53289ccffcd6984447653bc5 'other_projects/Kyujo-main.zip' | sha256sum -c -
-unzip -nq "$decomp_zip" -d "$parent"
-unzip -nq 'other_projects/Kyujo-main.zip' -d source
+# The game file: KYUJO2_ROM (set by the build-*.sh scripts, which find it by its SHA-1), else the old fixed name.
+rom_path=${KYUJO2_ROM:-$root/other_projects/$rom}
+printf '%s  %s\n' "$sha" "$rom_path" | sha1sum -c -
+
+# The Pokémon Stadium 2 decompilation, at the one commit the port was built and tested with. KYUJO2_DECOMP may name a
+# copy you already have (a folder, or the zip GitHub makes); otherwise git fetches exactly that commit.
+decomp_url=https://github.com/team-hippodrome/pokestadiumgs
+decomp_rev=c0e10f23d90cc4f335b654711f13e53c2c07323b
 decomp="$root/$parent/pokestadiumgs-master"
+if [[ ! -d "$decomp" ]]; then
+    given=${KYUJO2_DECOMP:-}
+    for old in other_projects/pokestadiumgs-master.zip 'other_projects/pokestadiumgs-master(1).zip'; do   # earlier setups
+        [[ -n "$given" || ! -f "$old" ]] || given=$old
+    done
+    if [[ -n "$given" && -d "$given" ]]; then
+        cp -a "$given" "$decomp"
+    elif [[ -n "$given" ]]; then
+        tmp=$(mktemp -d "$root/$parent/unzip.XXXXXX")
+        unzip -q "$given" -d "$tmp"
+        mv "$tmp"/*/ "$decomp"
+        rmdir "$tmp"
+    else
+        echo "Fetching the decompilation ($decomp_url, commit ${decomp_rev:0:12})"
+        git init -q "$decomp"
+        git -C "$decomp" remote add origin "$decomp_url"
+        git -C "$decomp" fetch -q --depth 1 origin "$decomp_rev"
+        git -C "$decomp" checkout -q --detach FETCH_HEAD
+    fi
+fi
+if [[ -d "$decomp/.git" ]]; then
+    [[ $(git -C "$decomp" rev-parse HEAD) == "$decomp_rev" ]] || { echo "Unexpected decompilation commit in $decomp" >&2; exit 1; }
+fi
 base="$decomp/baseroms/$region/baserom.z64"
-if [[ ! -e "$base" ]]; then ln -s "$root/other_projects/$rom" "$base"; fi
+if [[ ! -e "$base" ]]; then ln -s "$rom_path" "$base"; fi
 printf '%s  %s\n' "$sha" "$base" | sha1sum -c -
 if [[ ! -x .work/venv/bin/python ]]; then
-    # Debian ships ensurepip in python3-venv. Without it (a host set up with tools/setup-host.sh --local), make the venv
-    # without pip and install pip from Debian's pip wheel, which setup-host stages.
+    # Debian ships ensurepip in python3-venv. Without it (KYUJO2_NO_SUDO builds), make the venv without pip and install
+    # pip from Debian's pip wheel, which tools/build-lib.sh stages.
     if python3 -c 'import ensurepip' 2>/dev/null; then python3 -m venv .work/venv
     else python3 -m venv --without-pip .work/venv; fi
 fi
 python="$root/.work/venv/bin/python"
 if ! "$python" -m pip --version >/dev/null 2>&1; then
     wheel=$(ls .work/sysroot/usr/share/python-wheels/pip-*.whl /usr/share/python-wheels/pip-*.whl 2>/dev/null | head -1 || true)
-    [[ -n "$wheel" ]] || { echo 'pip is missing: install python3-venv (or run tools/setup-host.sh --local)' >&2; exit 1; }
+    [[ -n "$wheel" ]] || { echo 'pip is missing: install python3-venv' >&2; exit 1; }
     "$python" "$wheel/pip" install --no-index "$wheel"
 fi
 if ! "$python" -c 'import splat,spimdisasm,png,yaml' 2>/dev/null; then
@@ -51,10 +75,11 @@ fi
 if [[ "$region" == jp ]]; then
     # Keep the reference decomp and its matching ELF separate from the native overlay split.
     mkdir -p .work/jp-linked
-    unzip -nq "$decomp_zip" -d .work/jp-linked
+    [[ -d .work/jp-linked/pokestadiumgs-master ]] || git clone -q --no-checkout "$decomp_url" .work/jp-linked/pokestadiumgs-master
+    git -C .work/jp-linked/pokestadiumgs-master checkout -q --detach "$decomp_rev"
     export KYUJO2_JP_DECOMP="$root/.work/jp-linked/pokestadiumgs-master"
     jp_base="$KYUJO2_JP_DECOMP/baseroms/jp/baserom.z64"
-    if [[ ! -e "$jp_base" ]]; then ln -s "$root/other_projects/$rom" "$jp_base"; fi
+    if [[ ! -e "$jp_base" ]]; then ln -s "$rom_path" "$jp_base"; fi
     printf '%s  %s\n' "$sha" "$jp_base" | sha1sum -c -
     "$python" tools/jp-overlay-layout.py "$KYUJO2_JP_DECOMP"
     (cd "$KYUJO2_JP_DECOMP"

@@ -24,13 +24,11 @@ come from [Kyujo](#credits), the native port of the first Pokémon Stadium.
 | Pokémon Stadium (USA) `.z64` | build time only: the menu's font and wallpaper are read from it | `ed7bef5a306f88c0a6e96b15e71fee2ef32058f3` |
 | Game Boy ROMs and `.sav` files (optional) | Transfer Pak and GB Tower | |
 
-Building also needs two source archives, the Stadium 2 decompilation and Kyujo. [BUILDING.md](BUILDING.md) lists them
-with their checksums, together with the host setup. In short, on Debian 13:
+To build, put your two game files in `roms/` and run the script for your system on Linux or WSL. Each script
+installs what it needs. [BUILDING.md](BUILDING.md) has the details.
 
 ```sh
-tools/setup-host.sh --apt --android      # packages, SDL, Android SDK/NDK (devkitPro separately for Switch)
-tools/prepare-sources.sh us              # rebuild and recompile the game from your cartridge
-tools/build.sh all                       # dist/<version>/{Windows,Linux,Android,Switch}
+./build-linux.sh      # or ./build-windows.sh, ./build-android.sh, ./build-switch.sh, ./build-all.sh
 ```
 
 ## Playing

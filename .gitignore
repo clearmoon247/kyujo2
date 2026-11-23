@@ -4,6 +4,8 @@
 /build/
 /dist/
 /other_projects/
+/roms/*
+!/roms/README.md
 *.z64
 *.n64
 *.v64

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Builds and packages Kyujo2 (US English) after tools/setup-host.sh and tools/prepare-sources.sh us.
+# Builds and packages Kyujo2 (US English). Normally run by build-linux.sh, build-windows.sh, build-android.sh,
+# build-switch.sh or build-all.sh, which first install what is needed and prepare the sources (tools/prepare-sources.sh us).
 #
 #   tools/build.sh [--label NAME] [--jobs N] linux|windows|android|switch|all ...
 #
@@ -61,7 +62,7 @@ build_linux() {
 
 build_windows() {
     local sdl="$root/.work/sdl-windows/SDL2-2.32.10/x86_64-w64-mingw32"
-    [[ -d "$sdl" ]] || { echo "Missing $sdl: run tools/setup-host.sh" >&2; return 1; }
+    [[ -d "$sdl" ]] || { echo "Missing $sdl: run ./build-windows.sh" >&2; return 1; }
     # The runtime includes <Windows.h>; MinGW's header is windows.h and Linux file names are case-sensitive.
     mkdir -p .work/mingw-compat
     printf '#include <windows.h>\n' > .work/mingw-compat/Windows.h
@@ -78,8 +79,8 @@ build_android() {
     local sdk=${ANDROID_HOME:-$root/.work/android-sdk}
     local ndk=${ANDROID_NDK_HOME:-$sdk/ndk/27.3.13750724}
     local toolchain="$ndk/build/cmake/android.toolchain.cmake"
-    [[ -f "$toolchain" ]] || { echo "Missing the Android NDK at $ndk: run tools/setup-host.sh --apt --android" >&2; return 1; }
-    [[ -d .work/SDL2-2.32.10 ]] || { echo "Missing .work/SDL2-2.32.10: run tools/setup-host.sh" >&2; return 1; }
+    [[ -f "$toolchain" ]] || { echo "Missing the Android NDK at $ndk: run ./build-android.sh" >&2; return 1; }
+    [[ -d .work/SDL2-2.32.10 ]] || { echo "Missing .work/SDL2-2.32.10: run ./build-android.sh" >&2; return 1; }
     if [[ ! -f .work/sdl-android/libSDL2.so ]]; then
         cmake -GNinja -S .work/SDL2-2.32.10 -B .work/sdl-android -DCMAKE_TOOLCHAIN_FILE="$toolchain" \
             -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=24 -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \

@@ -22,10 +22,10 @@ install -m755 packaging/linux/AppRun "$app/AppRun"
 cp packaging/linux/org.kyujo2.Kyujo2.svg "$app/$id.svg"
 sed "s/^Icon=.*/Icon=$id/" packaging/linux/org.kyujo2.Kyujo2.desktop > "$app/$id.desktop"
 cp "$app/$id.svg" "$app/.DirIcon"
-cp source/Kyujo-main/{LICENSE,NOTICE.md,THIRD-PARTY.md} "$app/usr/share/doc/Kyujo2/"
+cp third_party/kyujo/{LICENSE,NOTICE.md,THIRD-PARTY.md} "$app/usr/share/doc/Kyujo2/"
 cp .work/N64ModernRuntime/COPYING "$app/usr/share/doc/Kyujo2/N64ModernRuntime-COPYING"
 cp .work/N64Recomp/LICENSE "$app/usr/share/doc/Kyujo2/N64Recomp-LICENSE"
-# Staged Debian packages (tools/setup-host.sh --local), or the system's own SDL2 (--apt).
+# Staged Debian packages (KYUJO2_NO_SUDO=1 builds, .work/sysroot), or the system's own SDL2.
 if [[ -n "${KYUJO2_SYSROOT:-}" ]]; then sysroot="$KYUJO2_SYSROOT/usr"
 elif [[ -d .work/sysroot/usr ]]; then sysroot="$PWD/.work/sysroot/usr"
 else sysroot=/usr; fi

@@ -27,7 +27,8 @@ Kyujo2's own files are licensed under the GNU General Public License, version 3 
 - the application icons.
 
 Kyujo2 is combined with:
-- **Kyujo** (GPL-3.0-only): its source is used through the user-supplied archive, and `patches/` changes it;
+- **Kyujo** (GPL-3.0-only): the files Kyujo2 uses are bundled unmodified in `third_party/kyujo/`, and `patches/`
+  changes them at build time;
 - **N64ModernRuntime** (GPL-3.0).
 
 Changes to other projects in `patches/` are offered under the licence of the project they change.
