@@ -1,0 +1,293 @@
+diff --git a/librecomp/include/librecomp/addresses.hpp b/librecomp/include/librecomp/addresses.hpp
+index b1b50cb..89ec210 100644
+--- a/librecomp/include/librecomp/addresses.hpp
++++ b/librecomp/include/librecomp/addresses.hpp
+@@ -7,7 +7,11 @@
+ 
+ namespace recomp {
+     // 512GB (kseg0 size)
++#ifdef __SWITCH__
++    constexpr size_t mem_size = 32ULL * 1024ULL * 1024ULL;
++#else
+     constexpr size_t mem_size = 512ULL * 1024ULL * 1024ULL;
++#endif
+     // 4GB (the full address space)
+     constexpr size_t allocation_size = 4096ULL * 1024ULL * 1024ULL;
+     // We need a place in rdram to hold the PI handles, so pick an address in extended rdram
+diff --git a/librecomp/include/librecomp/overlays.hpp b/librecomp/include/librecomp/overlays.hpp
+index a3196e7..9bb1aef 100644
+--- a/librecomp/include/librecomp/overlays.hpp
++++ b/librecomp/include/librecomp/overlays.hpp
+@@ -62,6 +62,9 @@ namespace recomp {
+     }
+ };
+ 
++void load_overlay(size_t section_table_index, int32_t ram);
++void unload_overlay_at(size_t section_table_index, int32_t ram);
++
+ extern "C" void load_overlays(uint32_t rom, int32_t ram_addr, uint32_t size);
+ extern "C" void unload_overlays(int32_t ram_addr, uint32_t size);
+ 
+diff --git a/librecomp/src/mods.cpp b/librecomp/src/mods.cpp
+index 447af9c..5ec4da1 100644
+--- a/librecomp/src/mods.cpp
++++ b/librecomp/src/mods.cpp
+@@ -165,6 +165,20 @@ void protect(void* target_func, uint64_t old_flags) {
+         &dummy_old_flags);
+     (void)result;
+ }
++#elif defined(__SWITCH__)
++// The Switch target runs the statically linked game without loadable code mods.
++class recomp::mods::DynamicLibrary {
++public:
++    static constexpr std::string_view PlatformExtension = ".so";
++    DynamicLibrary() = default;
++    explicit DynamicLibrary(const std::filesystem::path&) {}
++    void unload() {}
++    bool good() const { return false; }
++    uint32_t get_api_version() const { return 0; }
++    template<typename T> bool get_dll_symbol(T& out, const char*) const { out = nullptr; return false; }
++};
++void unprotect(void*, uint64_t*) { std::abort(); }
++void protect(void*, uint64_t) { std::abort(); }
+ #else
+ #  include <unistd.h>
+ #  include <dlfcn.h>
+diff --git a/librecomp/src/overlays.cpp b/librecomp/src/overlays.cpp
+index 04fa31e..cf57030 100644
+--- a/librecomp/src/overlays.cpp
++++ b/librecomp/src/overlays.cpp
+@@ -208,24 +208,30 @@ extern "C" void load_overlays(uint32_t rom, int32_t ram_addr, uint32_t size) {
+     }
+ }
+ 
+-extern "C" void unload_overlay_by_id(uint32_t id) {
+-    uint32_t section_table_index = overlays_info.table[id];
+-    const SectionTableEntry& section = sections_info.code_sections[section_table_index];
++static void remove_loaded_overlay(std::vector<LoadedSection>::iterator loaded) {
++    size_t index = loaded->section_table_index;
++    const auto& section = sections_info.code_sections[index];
++    for (size_t n = 0; n < section.num_funcs; ++n) {
++        const auto& func = section.funcs[n];
++        func_map.erase(static_cast<uint32_t>(loaded->loaded_ram_addr) + func.offset);
++    }
++    loaded_sections.erase(loaded);
++    auto previous = std::find_if(loaded_sections.rbegin(), loaded_sections.rend(),
++        [index](const LoadedSection& s) { return s.section_table_index == index; });
++    section_addresses[section.index] = previous == loaded_sections.rend() ? section.ram_addr : previous->loaded_ram_addr;
++}
+ 
+-    auto find_it = std::find_if(loaded_sections.begin(), loaded_sections.end(), [section_table_index](const LoadedSection& s) { return s.section_table_index == section_table_index; });
++void unload_overlay_at(size_t index, int32_t ram) {
++    auto loaded = std::find_if(loaded_sections.begin(), loaded_sections.end(),
++        [index, ram](const LoadedSection& s) { return s.section_table_index == index && s.loaded_ram_addr == ram; });
++    if (loaded != loaded_sections.end()) remove_loaded_overlay(loaded);
++}
+ 
+-    if (find_it != loaded_sections.end()) {
+-        // Determine where each function was loaded to and remove that entry from the function map
+-        for (size_t func_index = 0; func_index < section.num_funcs; func_index++) {
+-            const auto& func = section.funcs[func_index];
+-            uint32_t func_address = func.offset + find_it->loaded_ram_addr;
+-            func_map.erase(func_address);
+-        }
+-        // Reset the section's address in the address table
+-        section_addresses[section.index] = section.ram_addr;
+-        // Remove the section from the loaded section map
+-        loaded_sections.erase(find_it);
+-    }
++extern "C" void unload_overlay_by_id(uint32_t id) {
++    size_t index = overlays_info.table[id];
++    auto loaded = std::find_if(loaded_sections.begin(), loaded_sections.end(),
++        [index](const LoadedSection& s) { return s.section_table_index == index; });
++    if (loaded != loaded_sections.end()) remove_loaded_overlay(loaded);
+ }
+ 
+ extern "C" void load_overlay_by_id(uint32_t id, uint32_t ram_addr) {
+diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
+index 850689d..e4595ed 100644
+--- a/librecomp/src/recomp.cpp
++++ b/librecomp/src/recomp.cpp
+@@ -28,7 +28,7 @@
+ #ifdef _WIN32
+ #    define WIN32_LEAN_AND_MEAN
+ #    include <Windows.h>
+-#else
++#elif !defined(__SWITCH__)
+ #    include <sys/mman.h>
+ #endif
+ 
+@@ -190,8 +190,8 @@ bool write_file(const std::filesystem::path& path, const std::vector<uint8_t>& d
+     }
+ 
+     out_file.write(reinterpret_cast<const char*>(data.data()), data.size());
+-
+-    return true;
++    out_file.close();
++    return out_file.good();
+ }
+ 
+ bool check_stored_rom(const recomp::GameEntry& game_entry) {
+@@ -368,7 +368,7 @@ recomp::RomValidationError recomp::select_rom(const std::filesystem::path& rom_p
+ 
+     std::vector<uint8_t> rom_data = read_file(rom_path);
+ 
+-    if (rom_data.empty()) {
++    if (rom_data.size() < 0x40) {
+         return recomp::RomValidationError::FailedToOpen;
+     }
+ 
+@@ -405,7 +405,15 @@ recomp::RomValidationError recomp::select_rom(const std::filesystem::path& rom_p
+         }
+     }
+ 
+-    write_file(config_path / game_entry.stored_filename(), rom_data);
++    const auto destination = config_path / game_entry.stored_filename();
++    std::error_code path_error;
++    if (byteswap_type == ByteswapType::NotByteswapped &&
++        std::filesystem::equivalent(rom_path, destination, path_error)) {
++        return recomp::RomValidationError::Good;
++    }
++    if (!write_file(destination, rom_data)) {
++        return recomp::RomValidationError::OtherError;
++    }
+     
+     return recomp::RomValidationError::Good;
+ }
+@@ -935,7 +943,10 @@ void recomp::start(const recomp::Configuration& cfg) {
+     // that initializes to zero. Protect the region above the memory size to catch accesses to invalid addresses.
+     uint8_t* rdram;
+     bool alloc_failed;
+-#ifdef _WIN32
++#if defined(__SWITCH__)
++    rdram = static_cast<uint8_t*>(std::calloc(1, mem_size));
++    alloc_failed = rdram == nullptr;
++#elif defined(_WIN32)
+     rdram = reinterpret_cast<uint8_t*>(VirtualAlloc(nullptr, allocation_size, MEM_COMMIT | MEM_RESERVE, PAGE_NOACCESS));
+     DWORD old_protect = 0;
+     alloc_failed = (rdram == nullptr);
+@@ -998,7 +1009,10 @@ void recomp::start(const recomp::Configuration& cfg) {
+     
+     // Free rdram.
+     bool free_failed;
+-#ifdef _WIN32
++#if defined(__SWITCH__)
++    std::free(rdram);
++    free_failed = false;
++#elif defined(_WIN32)
+     // VirtualFree returns zero on failure.
+     free_failed = (VirtualFree(rdram, 0, MEM_RELEASE) == 0);
+ #else
+diff --git a/thirdparty/concurrentqueue/lightweightsemaphore.h b/thirdparty/concurrentqueue/lightweightsemaphore.h
+index 41ba094..30af8fd 100644
+--- a/thirdparty/concurrentqueue/lightweightsemaphore.h
++++ b/thirdparty/concurrentqueue/lightweightsemaphore.h
+@@ -24,7 +24,7 @@ extern "C" {
+ }
+ #elif defined(__MACH__)
+ #include <mach/mach.h>
+-#elif defined(__unix__)
++#elif defined(__unix__) || defined(__SWITCH__)
+ #include <semaphore.h>
+ 
+ #if defined(__GLIBC_PREREQ) && defined(_GNU_SOURCE)
+@@ -165,7 +165,7 @@ public:
+ 		}
+ 	}
+ };
+-#elif defined(__unix__)
++#elif defined(__unix__) || defined(__SWITCH__)
+ //---------------------------------------------------------
+ // Semaphore (POSIX, Linux)
+ //---------------------------------------------------------
+diff --git a/ultramodern/include/ultramodern/renderer_context.hpp b/ultramodern/include/ultramodern/renderer_context.hpp
+index d60c4ec..2c94b3a 100644
+--- a/ultramodern/include/ultramodern/renderer_context.hpp
++++ b/ultramodern/include/ultramodern/renderer_context.hpp
+@@ -8,7 +8,7 @@
+ 
+ #if defined(_WIN32)
+ #   define WIN32_LEAN_AND_MEAN
+-#   include <Windows.h>
++#   include <windows.h>
+ #elif defined(__ANDROID__)
+ #   include "android/native_window.h"
+ #elif defined(__linux__)
+@@ -54,7 +54,7 @@ namespace ultramodern {
+             auto operator<=>(const WindowHandle&) const = default;
+         };
+ // TODO add a native window handle option here (Display/Window for x11 and ANativeWindow for Android) as a compile-time option.
+-#elif defined(__linux__) || defined(__ANDROID__)
++#elif defined(__linux__) || defined(__ANDROID__) || defined(__SWITCH__)
+         using WindowHandle = SDL_Window*;
+ #elif defined(__APPLE__)
+         struct WindowHandle {
+diff --git a/ultramodern/src/error_handling.cpp b/ultramodern/src/error_handling.cpp
+index 8ca779e..a3fa33f 100644
+--- a/ultramodern/src/error_handling.cpp
++++ b/ultramodern/src/error_handling.cpp
+@@ -21,7 +21,7 @@ void ultramodern::error_handling::message_box(const char* msg) {
+ void ultramodern::error_handling::quick_exit(const char* filename, int line, const char *func, int exit_status) {
+     fprintf(stderr, "Exiting with exit status '%i'. Function %s, at file %s:%i\n", exit_status, func, filename, line);
+ 
+-#ifdef __APPLE__
++#if defined(__APPLE__) || defined(__MINGW32__) || defined(__SWITCH__)
+     std::_Exit(exit_status);
+ #else
+     std::quick_exit(exit_status);
+diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
+index 17d7a47..5fe2ffb 100644
+--- a/ultramodern/src/events.cpp
++++ b/ultramodern/src/events.cpp
+@@ -569,7 +569,15 @@ void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
+     if (task->t.type == M_GFXTASK) {
+         events_context.action_queue.enqueue(SpTaskAction{ *task });
+     }
+-    // Set all other tasks as the RSP task
++    // Stadium 2 reuses its command lists. Consume audio and JPEG on submission while
++    // the submitting game thread still owns the descriptor and source buffer.
++    else if (task->t.type == M_AUDTASK || task->t.type == 4) {
++        const OSTask submitted = *task;
++        if (!ultramodern::rsp::run_task(PASS_RDRAM &submitted)) {
++            ULTRAMODERN_QUICK_EXIT();
++        }
++        sp_complete();
++    }
+     else {
+         events_context.sp_task_queue.enqueue(task);
+     }
+diff --git a/ultramodern/src/task_win32.cpp b/ultramodern/src/task_win32.cpp
+index bacbf01..7d67ee1 100644
+--- a/ultramodern/src/task_win32.cpp
++++ b/ultramodern/src/task_win32.cpp
+@@ -1,6 +1,6 @@
+ #ifdef _WIN32
+ 
+-#include <Windows.h>
++#include <windows.h>
+ 
+ #include "ultramodern/ultra64.h"
+ #include "ultramodern/ultramodern.hpp"
+diff --git a/ultramodern/src/threads.cpp b/ultramodern/src/threads.cpp
+index 6e3ed18..62db8c3 100644
+--- a/ultramodern/src/threads.cpp
++++ b/ultramodern/src/threads.cpp
+@@ -11,7 +11,7 @@
+ 
+ // Native APIs only used to set thread names for easier debugging
+ #ifdef _WIN32
+-#include <Windows.h>
++#include <windows.h>
+ #endif
+ 
+ static ultramodern::threads::callbacks_t threads_callbacks;
+@@ -137,6 +137,9 @@ void ultramodern::set_native_thread_priority(ThreadPriority pri) {
+     //         break;
+     // }
+ }
++#elif defined(__SWITCH__)
++void ultramodern::set_native_thread_name(const std::string&) {}
++void ultramodern::set_native_thread_priority(ThreadPriority) {}
+ #elif defined(__APPLE__)
+ void ultramodern::set_native_thread_name(const std::string& name) {
+     if (name.length() > 15) {

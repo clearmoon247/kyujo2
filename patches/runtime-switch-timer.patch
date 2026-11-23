@@ -1,0 +1,68 @@
+diff --git a/ultramodern/include/ultramodern/ultramodern.hpp b/ultramodern/include/ultramodern/ultramodern.hpp
+index 46aea61..adcc76f 100644
+--- a/ultramodern/include/ultramodern/ultramodern.hpp
++++ b/ultramodern/include/ultramodern/ultramodern.hpp
+@@ -36,6 +36,11 @@ void preinit(RDRAM_ARG renderer::WindowHandle window_handle);
+ void init_saving(RDRAM_ARG1);
+ void init_events(RDRAM_ARG renderer::WindowHandle window_handle);
+ void init_timers(RDRAM_ARG1);
++#ifdef __SWITCH__
++void stop_timer_thread();
++void terminate_game_threads();
++bool game_threads_terminating();
++#endif
+ void init_thread_cleanup();
+ 
+ // Saving
+diff --git a/ultramodern/src/timer.cpp b/ultramodern/src/timer.cpp
+index ee26c45..6b6566d 100644
+--- a/ultramodern/src/timer.cpp
++++ b/ultramodern/src/timer.cpp
+@@ -97,7 +97,12 @@ void timer_thread(RDRAM_ARG1) {
+         }
+     };
+ 
++#ifdef __SWITCH__
++    extern std::atomic_bool exited;
++    while (!exited) {
++#else
+     while (true) {
++#endif
+         // Empty the action queue
+         Action cur_action;
+         while (timer_context.action_queue.try_dequeue(cur_action)) {
+@@ -108,6 +113,9 @@ void timer_thread(RDRAM_ARG1) {
+         while (active_timers.empty()) {
+             timer_context.action_queue.wait_dequeue(cur_action);
+             process_timer_action(cur_action);
++#ifdef __SWITCH__
++            if (exited) return;
++#endif
+         }
+ 
+         // Get the timer that's closest to running out
+@@ -140,7 +148,24 @@ void timer_thread(RDRAM_ARG1) {
+     }
+ }
+ 
++#ifdef __SWITCH__
++static std::thread *switch_timer_thread;
++// The Homebrew loader unloads the program's code when it exits, so the timer thread must have ended by then: called
++// after the game has stopped (exited is set). The empty action wakes it from either wait.
++void ultramodern::stop_timer_thread() {
++    if (!switch_timer_thread || !switch_timer_thread->joinable()) return;
++    timer_context.action_queue.enqueue(RemoveTimerAction{});
++    switch_timer_thread->join();
++}
++#endif
++
+ void ultramodern::init_timers(RDRAM_ARG1) {
++#ifdef __SWITCH__
++    // libnx cannot detach a thread: std::thread::detach throws, which ended the program as the game started. The
++    // thread object is kept instead, and joined by stop_timer_thread before the program exits.
++    switch_timer_thread = new std::thread{ timer_thread, PASS_RDRAM1 };
++    return;
++#endif
+     timer_context.thread = std::thread{ timer_thread, PASS_RDRAM1 };
+     timer_context.thread.detach();
+ }

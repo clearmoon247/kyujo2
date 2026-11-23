@@ -1,0 +1,18 @@
+--- a/ultramodern/src/scheduling.cpp
++++ b/ultramodern/src/scheduling.cpp
+@@ -46,3 +46,15 @@
+     ultramodern::wait_for_external_message_timed(PASS_RDRAM1, 1);
+     ultramodern::check_running_queue(PASS_RDRAM1);
+ }
++
++// A polling loop waits for another guest thread, whatever its priority. Give the processor to the next ready
++// thread at once (this one is queued behind it) and wait for an external event only when none is ready.
++extern "C" void yield_to_ready(RDRAM_ARG1) {
++    if (!ultramodern::thread_queue_empty(PASS_RDRAM ultramodern::running_queue)) {
++        OSThread* next_thread = TO_PTR(OSThread, ultramodern::thread_queue_pop(PASS_RDRAM ultramodern::running_queue));
++        swap_to_thread(PASS_RDRAM next_thread);
++        return;
++    }
++    ultramodern::wait_for_external_message_timed(PASS_RDRAM1, 1);
++    ultramodern::check_running_queue(PASS_RDRAM1);
++}

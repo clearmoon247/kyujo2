@@ -1,0 +1,81 @@
+--- f3dex2.c
++++ f3dex2.c
+@@ -19,6 +19,7 @@
+  *   not done: line primitives, texture-coordinate generation in "linear" mode, G_LOAD_UCODE, G_DMA_IO, point lights (this ucode has none).
+  */
+ #include <stdint.h>
++#include "render_memory.h"
+ #include <math.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -104,10 +105,10 @@
+ static const uint8_t *mem(uint32_t phys, uint32_t len)
+ {
+     if (!host_game_range_ok(phys, len)) { fu(FU_BAD_ADDR, phys); return 0; }       /* outside the program image: garbage pointer in the display list */
+-    return (const uint8_t *)(uintptr_t)phys;
+-}
+-static uint32_t be32(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
+-static int be16s(const uint8_t *p) { return (int16_t)((p[0] << 8) | p[1]); }
++    return gRdpMem + phys;
++}
++static uint32_t be32(const uint8_t *p) { return ((uint32_t)GUEST_BYTE(p, 0) << 24) | ((uint32_t)GUEST_BYTE(p, 1) << 16) | ((uint32_t)GUEST_BYTE(p, 2) << 8) | GUEST_BYTE(p, 3); }
++static int be16s(const uint8_t *p) { return (int16_t)((GUEST_BYTE(p, 0) << 8) | GUEST_BYTE(p, 1)); }
+ 
+ /* A display list address: top nibble = segment number (0 = plain), low 24 bits = offset. Returns the physical address. */
+ static uint32_t resolve(uint32_t addr)
+@@ -137,7 +138,7 @@
+     int i;
+     if (!p) return 0;
+     for (i = 0; i < 16; i++) {
+-        m[i] = (float)be16s(p + i * 2) + (float)((p[32 + i * 2] << 8) | p[33 + i * 2]) / 65536.0f;
++        m[i] = (float)be16s(p + i * 2) + (float)((GUEST_BYTE(p, 32 + i * 2) << 8) | GUEST_BYTE(p, 33 + i * 2)) / 65536.0f;
+     }
+     return 1;
+ }
+@@ -214,7 +215,7 @@
+         Vertex *v = &S.vtx[v0 + i];
+         float x = (float)be16s(p), y = (float)be16s(p + 2), z = (float)be16s(p + 4);
+         int tcs = be16s(p + 8), tct = be16s(p + 10);
+-        float r = p[12], g = p[13], b = p[14], a = p[15];
++        float r = GUEST_BYTE(p, 12), g = GUEST_BYTE(p, 13), b = GUEST_BYTE(p, 14), a = GUEST_BYTE(p, 15);
+         float sfp, tfp;
+ 
+         v->cx = x * S.mp[0] + y * S.mp[4] + z * S.mp[8] + S.mp[12];
+@@ -234,7 +235,7 @@
+ 
+         if (S.geom & GM_LIGHTING) {
+             /* The "colour" bytes are a normal (signed, 127 = 1.0). Dot it with each light's direction (set up above) and sum the lights. */
+-            float nx = (float)(int8_t)p[12], ny = (float)(int8_t)p[13], nz = (float)(int8_t)p[14];
++            float nx = (float)(int8_t)GUEST_BYTE(p, 12), ny = (float)(int8_t)GUEST_BYTE(p, 13), nz = (float)(int8_t)GUEST_BYTE(p, 14);
+             const Light *amb = &S.light[2 + (S.numlights < 7 ? S.numlights : 7)];
+             int li;
+             r = amb->col[0]; g = amb->col[1]; b = amb->col[2];
+@@ -252,7 +253,7 @@
+                     int k;
+                     budget--;
+                     fprintf(stderr, "light: task %u n=%d lights=%d ambient %u,%u,%u mvscale %.3f normal %d,%d,%d -> shade %.0f,%.0f,%.0f;", (unsigned)sTaskNo, n, S.numlights, amb->col[0], amb->col[1], amb->col[2],
+-                            sqrtf(mv[0] * mv[0] + mv[1] * mv[1] + mv[2] * mv[2]), (int)(int8_t)p[12], (int)(int8_t)p[13], (int)(int8_t)p[14], r, g, b);
++                            sqrtf(mv[0] * mv[0] + mv[1] * mv[1] + mv[2] * mv[2]), (int)(int8_t)GUEST_BYTE(p, 12), (int)(int8_t)GUEST_BYTE(p, 13), (int)(int8_t)GUEST_BYTE(p, 14), r, g, b);
+                     for (k = 0; k < S.numlights && k < 7; k++) fprintf(stderr, " L%d col %u,%u,%u dir %d,%d,%d;", k, S.light[2 + k].col[0], S.light[2 + k].col[1], S.light[2 + k].col[2], S.light[2 + k].dir[0], S.light[2 + k].dir[1], S.light[2 + k].dir[2]);
+                     fprintf(stderr, "\n");
+                 }
+@@ -410,8 +411,8 @@
+         uint32_t slot = ofs / 24u;                  /* gSPLight / gSPLookAt: byte offset = slot * 24 (gbi.h G_MVO_*) */
+         if (slot < 10 && len >= 16) {
+             Light *l = &S.light[slot];
+-            l->col[0] = p[0]; l->col[1] = p[1]; l->col[2] = p[2];
+-            l->dir[0] = (int8_t)p[8]; l->dir[1] = (int8_t)p[9]; l->dir[2] = (int8_t)p[10];
++            l->col[0] = GUEST_BYTE(p, 0); l->col[1] = GUEST_BYTE(p, 1); l->col[2] = GUEST_BYTE(p, 2);
++            l->dir[0] = (int8_t)GUEST_BYTE(p, 8); l->dir[1] = (int8_t)GUEST_BYTE(p, 9); l->dir[2] = (int8_t)GUEST_BYTE(p, 10);
+         }
+         break;
+     }
+@@ -627,7 +628,7 @@
+         case G_TEXRECT: case G_TEXRECTFLIP: {
+             /* followed by G_RDPHALF_1 (s, t) and G_RDPHALF_2 (dsdx, dtdy) */
+             const uint8_t *c2 = mem(pc, 16);
+-            if (c2 && (c2[0] == G_RDPHALF_1) && (c2[8] == G_RDPHALF_2)) {
++            if (c2 && (GUEST_BYTE(c2, 0) == G_RDPHALF_1) && (GUEST_BYTE(c2, 8) == G_RDPHALF_2)) {
+                 if (trace_limit() >= 1000) fprintf(stderr, "gfx:   texrect halves %08X %08X\n", be32(c2 + 4), be32(c2 + 12));
+                 rdp_texture_rectangle(w0, w1, be32(c2 + 4), be32(c2 + 12), op == G_TEXRECTFLIP);
+                 pc += 16;

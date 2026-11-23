@@ -1,0 +1,276 @@
+--- a/host_menu.c
++++ b/host_menu.c
+@@ -27,6 +27,14 @@
+  * A Switch window layer would reuse this file unchanged (and only has this menu, no menu bar). HOST-side file (C library only).
+  */
+ #include <stdio.h>
++extern int kyujo2_menu_pump(void);
++extern void kyujo2_request_exit(int);
++extern int kyujo2_menu_click(int *x, int *y);
++extern const char *kyujo2_pak_load(int port, const char *rom, const char *save);
++extern void kyujo2_pak_unload(int port);
++static int selecting_stadium;
++#include "platform.h"
++static int inserted_paks(void) { for (int i=0;i<4;i++) if(host_gbpak_present(i)) return 1; return 0; }
+ #include <stdlib.h>
+ #include <string.h>
+ 
+@@ -569,7 +577,7 @@
+         break; }
+     case SC_PAKS:
+         if (sSetup) {
+-            add_item(K_LABEL, I_NONE, "No Game Boy cartridge was found.", NULL);
++            add_item(K_LABEL, I_NONE, inserted_paks() ? "Choose Game Paks for the other controllers, or select Done." : "No Game Boy cartridge was found.", NULL);
+             add_item(K_LABEL, I_NONE, "Choose a Game Boy ROM for the Transfer Pak of each", NULL);
+             add_item(K_LABEL, I_NONE, "controller that should have one (GB Tower, Pokemon Lab).", NULL);
+             add_item(K_LABEL, I_NONE, "", NULL);
+@@ -659,22 +667,20 @@
+         add_item(K_CHOICE, I_CHEAT, "Cheat: knock out opponent", s->cheats ? "On" : "Off");
+         host_cheat_help(s, tmp2, sizeof tmp2);
+         add_item(K_LABEL, I_NONE, clip_end(tmp2, RIGHT_X - LIST_X - 14, SZ), NULL);
+-        add_item(K_CHOICE, I_CHEAT_HOF, "Cheat: Hall of Fame complete", s->cheat_hof ? "On" : "Off");
+-        add_item(K_CHOICE, I_CHEAT_CPUVS, "Cheat: Kids Club CPU vs CPU", s->cheat_cpuvs ? "On" : "Off");
+-        add_item(K_LABEL, I_NONE, "Hall: made-up records, not saved. Kids Club: Ready! with 4 COM.", NULL);
++        add_item(K_CHOICE, I_CHEAT_HOF, "Cheat: maximum HP (first Pokemon)", s->cheat_hof ? "On" : "Off");
+         if (sRawNow.touch) add_item(K_LABEL, I_NONE, "Menu button or Back: menu", NULL);
+         else if (!sRawNow.console) add_item(K_LABEL, I_NONE, "F11: full screen     F1 or Esc: menu", NULL);
+         else add_item(K_LABEL, I_NONE, "Minus: menu", NULL);
+         add_item(K_ACTION, I_BACK, "Back", NULL);
+         break;
+     case SC_ABOUT:
+-        add_item(K_LABEL, I_NONE, "Pokemon Stadium (USA) - native port", NULL);
++        add_item(K_LABEL, I_NONE, "Pokemon Stadium 2 (USA) - Kyujo2", NULL);
+         add_item(K_LABEL, I_NONE, "", NULL);
+         add_path_line("Folder: ", host_app_dir());
+         add_path_line("Settings: ", host_settings_path());
+         add_path_line("Save file: ", host_save_path());
+         add_path_line("ROM: ", s->rom[0] ? s->rom : "(chosen at start)");
+-        add_item(K_LABEL, I_NONE, "Log: kyujo-log.txt in the folder", NULL);
++        add_item(K_LABEL, I_NONE, "English native port", NULL);
+         add_item(K_LABEL, I_NONE, "", NULL);
+         add_item(K_LABEL, I_NONE, sRawNow.console ? "Minus: menu" : sRawNow.touch ? "Menu button or Back: menu" : "F1 or Esc: menu     F11: full screen", NULL);
+         add_item(K_ACTION, I_BACK, "Back", NULL);
+@@ -722,7 +728,7 @@
+ {
+     static char t[160];
+     switch (sStack[sDepth]) {
+-    case SC_MAIN: return "Pokemon Stadium";
++    case SC_MAIN: return "Kyujo2";
+     case SC_PAKS: return sSetup ? "Game Pak Setup" : "Game Boy cartridges";
+     case SC_PAK: snprintf(t, sizeof t, "Game Pak: controller %d", sPak + 1); return t;
+     case SC_CTRL: return "Controllers";
+@@ -736,7 +742,7 @@
+     case SC_ABOUT: return "About";
+     case SC_BROWSER:
+         switch (sBr.purpose) {
+-        case BP_GAME_ROM: return "Choose the Pokemon Stadium ROM";
++        case BP_GAME_ROM: return "Choose the Stadium 2 ROM";
+         case BP_GAME_SAVE: return "Choose the save file";
+         case BP_GB_ROM: return "Choose the Game Boy ROM";
+         default: return "Choose the Game Boy save file";
+@@ -781,6 +787,7 @@
+ 
+ static void pop(void)
+ {
++    if (selecting_stadium) { close_menu(); return; }
+     if (sStack[sDepth] == SC_ASK && sAskThenClose) { sAskThenClose = 0; close_menu(); return; }   /* "Later" (or Back) on the question that came from closing */
+     if (sDepth > 0) sDepth--;
+     else request_close();
+@@ -1130,9 +1137,9 @@
+     case BP_GAME_ROM: sBr.exts = "z64;n64;v64"; break;
+     case BP_GB_ROM: sBr.exts = "gb;gbc"; break;
+     case BP_GAME_SAVE:
+-        sBr.exts = "sav;srm;eep;fla";
++        sBr.exts = "bin;sav;srm;eep;fla";
+         sBr.can_create = 1;
+-        snprintf(sBr.new_name, sizeof sBr.new_name, "kyujo.sav");
++        snprintf(sBr.new_name, sizeof sBr.new_name, "kyujo2.bin");
+         break;
+     default:
+         sBr.exts = "sav;srm";
+@@ -1161,10 +1168,10 @@
+ #ifdef HOST_SHELL_PICKER
+     host_settings_fix_gb_saves();
+ #endif
+-    if (!s->gb_rom[port][0]) { host_gbpak_unload(port); return 1; }
++    if (!s->gb_rom[port][0]) { kyujo2_pak_unload(port); return 1; }
+     if (s->gb_save[port][0]) snprintf(save, sizeof save, "%s", s->gb_save[port]);
+     else host_path_with_ext(s->gb_rom[port], ".sav", save, sizeof save);
+-    err = host_gbpak_load(port, s->gb_rom[port], save);
++    err = kyujo2_pak_load(port, s->gb_rom[port], save);
+     if (err) { message(err, COL_ERR); return 0; }
+     return 1;
+ }
+@@ -1222,6 +1229,7 @@
+         err = host_rom_check(path);
+         if (err) { message(err, COL_ERR); return; }
+         snprintf(s->rom, sizeof s->rom, "%s", path);
++        if (selecting_stadium) { changed(); close_menu(); return; }
+         message("Stadium ROM chosen. It is used after a restart.", COL_OK);
+         break;
+     case BP_GAME_SAVE:
+@@ -1266,7 +1274,7 @@
+     int n;
+     save_folder(dir, sizeof dir);
+     for (n = 2; n < 1000; n++) {
+-        snprintf(name, sizeof name, "kyujo-%d.sav", n);
++        snprintf(name, sizeof name, "kyujo2-%d.bin", n);
+         join_path(path, sizeof path, dir, name);
+         if (!file_exists(path)) break;
+     }
+@@ -1363,7 +1371,7 @@
+     host_menu_notice("Restarting...");
+     if (sDirtySettings) host_settings_save(s, host_settings_path());
+     host_gbpak_flush();
+-    if (!host_restart()) message("The game could not be started again.", COL_ERR);
++    if (host_restart()) close_menu(); else message("The game could not be started again.", COL_ERR);
+ }
+ 
+ static void activate(const Item *it)
+@@ -1389,7 +1397,7 @@
+         host_menu_notice("Quitting...");
+         if (sDirtySettings) host_settings_save(s, host_settings_path());
+         host_gbpak_flush();
+-        host_exit(it->id == I_QUIT_CLOSE ? 100 : 0);                 /* 100: the console shell ends the whole process instead of returning to its launcher */
++        kyujo2_request_exit(it->id == I_QUIT_CLOSE ? 100 : 0); close_menu();                 /* 100: the console shell ends the whole process instead of returning to its launcher */
+         return;
+     case I_DEVTEST: push(SC_PADTEST); return;
+     case I_DEVKB: sDev = DEV_KEYBOARD; push(SC_DEVICE); return;
+@@ -1411,7 +1419,7 @@
+     case I_PAK_REMOVE:
+         s->gb_rom[sPak][0] = 0;
+         s->gb_save[sPak][0] = 0;
+-        host_gbpak_unload(sPak);
++        kyujo2_pak_unload(sPak);
+         changed();
+         needs_restart();
+         message(sBoot ? "Cartridge taken out." : "Cartridge taken out. The game notices after a restart.", COL_OK);
+@@ -1695,6 +1703,7 @@
+     host_clock_pause();
+     sOpen = 1;
+     goto_screen(HM_MAIN);
++    if (selecting_stadium) open_browser(BP_GAME_ROM, 0, NULL);
+     sMessage[0] = 0;
+     sAskThenClose = 0;
+     if (s->fullscreen != host_window_is_fullscreen()) { s->fullscreen = host_window_is_fullscreen(); changed(); }   /* F11 may have changed it since */
+@@ -1705,6 +1714,7 @@
+     while (sOpen) {
+         unsigned nav, edge;
+         int rq;
++        if (!kyujo2_menu_pump()) { close_menu(); break; }
+         host_raw_script_tick();
+         host_raw_get(&raw);
+         sRawNow = raw;
+@@ -1748,6 +1758,17 @@
+             }
+         } else {
+             rebuild();
++            int mx, my;
++            if (kyujo2_menu_click(&mx, &my)) {
++                if (sStack[sDepth] != SC_DEVICE && mx >= LIST_X && mx <= RIGHT_X && my >= LIST_Y) {
++                    int row = (my - LIST_Y) / PITCH;
++                    int idx = sScroll[sDepth] + row;
++                    if (row < visible_rows() && idx < sN && sItems[idx].kind != K_LABEL) {
++                        sCursor[sDepth] = idx;
++                        edge |= NV_OK;
++                    }
++                }
++            }
+             if ((raw.key[HK_F1] && !sPrev.key[HK_F1]) || (edge & NV_CLOSE)) { request_close(); }
+             else if (sStack[sDepth] == SC_DEVICE) { layout_input(edge, &cap); }
+             else if (edge & (NV_UP | NV_DOWN | NV_PGUP | NV_PGDN)) {
+@@ -1883,3 +1904,11 @@
+     }
+     sPrev = raw;
+ }
++
++int kyujo2_choose_stadium(void)
++{
++    selecting_stadium = 1;
++    menu_loop();
++    selecting_stadium = 0;
++    return host_settings()->rom[0] != 0;
++}
+--- a/host_paths.c
++++ b/host_paths.c
+@@ -53,6 +53,7 @@
+ const char *host_app_path(char *out, unsigned size, const char *name)
+ {
+     int absolute = name[0] == '/' || name[0] == '\\' || (name[0] && name[1] == ':');
++    if (strncmp(name, "sdmc:/", 6) == 0) absolute = 1;
+     if (absolute) snprintf(out, size, "%s", name);
+     else snprintf(out, size, "%s/%s", host_app_dir(), name);
+     return out;
+@@ -94,6 +95,7 @@
+     char tmp[1100];
+     size_t n;
+     snprintf(tmp, sizeof tmp, "%s", dir);
++    if (strcmp(tmp, "sdmc:/") == 0 || strcmp(tmp, "sdmc:") == 0) { snprintf(out, size, "sdmc:/"); return; }
+     n = strlen(tmp);
+     while (n > 1 && is_sep(tmp[n - 1]) && !(n == 3 && tmp[1] == ':')) tmp[--n] = 0;      /* no trailing separator, except "C:\" and "/" */
+ #ifdef _WIN32
+@@ -237,7 +239,7 @@
+ }
+ #endif
+ 
+-int host_restart(void)
++int kyujo1_desktop_restart(void)
+ {
+     int i;
+     if (sArgc < 1 || !sArgv) return 0;
+@@ -272,6 +274,8 @@
+         host_run_exit_hook();
+         return shell_restart();
+     }
++#elif defined(__SWITCH__) || defined(__ANDROID__)
++    return 0;
+ #else
+     {
+         char exe[1024];
+--- a/host_settings.c
++++ b/host_settings.c
+@@ -14,7 +14,7 @@
+  *   gb_cpu_standard=0                                advanced, not in the menu: 1: the Game Boy processor runs on the module's own (slower) interpreter; 0 (default): the fast native one
+  *   stick_dpad_off=0                                 advanced, not in the menu: 1: the control stick does not also press the D-pad (by default it does: the game's menus only read the D-pad)
+  *   cheats=1                                         L+R knocks out the opponent's Pokemon (L+R+Z wins the battle) in a battle
+- *   cheat_hall_of_fame=0                             1: the Hall of Fame (Victory Palace) shows all 151 Pokemon; the missing ones are made up on screen, nothing is written to the save
++ *   cheat_max_hp=0                             1: the Hall of Fame (Victory Palace) shows all 151 Pokemon; the missing ones are made up on screen, nothing is written to the save
+  *   cheat_cpu_vs_cpu=0                               1: Kids Club: "Ready!" can be chosen with all four players set to COM (computer against computer)
+  *   p1_rom=gb\pokemon-yellow.gbc                     the Game Boy cartridge in the Transfer Pak of controller port 1 (p1..p4)
+  *   p1_save=gb\pokemon-yellow.sav                    its save file (empty: the ROM's name with .sav)
+@@ -93,7 +93,7 @@
+ {
+     int a;
+     memset(s, 0, sizeof *s);
+-    s->cheats = 1;
++    s->cheats = 0;
+     s->stick_dpad = 1;
+     s->pak_real_speed = 0;
+     s->gb_fast_cpu = 1;                                     /* the fast Game Boy processor is the default (GB Tower lags with the standard one); gb_cpu_standard=1 in the file switches it off */
+@@ -174,7 +174,7 @@
+     static char path[1100];
+     const char *env = getenv("KYUJO_CFG");
+     if (env && env[0]) copy_str(path, sizeof path, env);
+-    else host_app_path(path, sizeof path, "kyujo.cfg");
++    else host_app_path(path, sizeof path, "Kyujo2.cfg");
+     return path;
+ }
+ 
+@@ -236,7 +236,7 @@
+     if (strcmp(name, "game_rom") == 0) { copy_str(s->rom, sizeof s->rom, val); return 1; }
+     if (strcmp(name, "save") == 0) { copy_str(s->save, sizeof s->save, val); return 1; }
+     if (strcmp(name, "cheats") == 0) return parse_int(val, 0, 1, &s->cheats);
+-    if (strcmp(name, "cheat_hall_of_fame") == 0) return parse_int(val, 0, 1, &s->cheat_hof);
++    if (strcmp(name, "cheat_max_hp") == 0) return parse_int(val, 0, 1, &s->cheat_hof);
+     if (strcmp(name, "cheat_cpu_vs_cpu") == 0) return parse_int(val, 0, 1, &s->cheat_cpuvs);
+ #if defined(__wasm__)
+     if (strcmp(name, "fill_screen") == 0) return parse_int(val, 0, 1, &s->widescreen);     /* the shell build's own key: "widescreen=" saved by earlier test builds never had an effect there, so it is not read */
+@@ -375,7 +375,7 @@
+     if (size) out[0] = 0;
+     put(&o, "# Kyujo: settings. The in-game menu (F1, Esc, or a gamepad's menu button) writes this file;\n"
+             "# you can also edit it while the program is not running. Relative paths are relative to the program's folder.\n\n");
+-    put(&o, "game_rom=%s\nsave=%s\ncheats=%d\ncheat_hall_of_fame=%d\ncheat_cpu_vs_cpu=%d\nstick_dpad_off=%d\npak_loading_real_speed=%d\ngb_cpu_standard=%d\npak_setup_done=%d\nscale_style=%d\n" WIDE_KEY "=%d\nfullscreen=%d\nvolume=%d\n\n", s->rom, s->save, s->cheats, s->cheat_hof, s->cheat_cpuvs, !s->stick_dpad, s->pak_real_speed, !s->gb_fast_cpu, s->pak_setup_done, s->scale_style, s->widescreen, s->fullscreen, s->volume);
++    put(&o, "game_rom=%s\nsave=%s\ncheats=%d\ncheat_max_hp=%d\ncheat_cpu_vs_cpu=%d\nstick_dpad_off=%d\npak_loading_real_speed=%d\ngb_cpu_standard=%d\npak_setup_done=%d\nscale_style=%d\n" WIDE_KEY "=%d\nfullscreen=%d\nvolume=%d\n\n", s->rom, s->save, s->cheats, s->cheat_hof, s->cheat_cpuvs, !s->stick_dpad, s->pak_real_speed, !s->gb_fast_cpu, s->pak_setup_done, s->scale_style, s->widescreen, s->fullscreen, s->volume);
+     put(&o, "# Game Boy cartridges in the Transfer Paks of controller ports 1 to 4 (for GB Tower and the Pokemon Lab).\n"
+             "# The save file is changed when the game saves; the original is kept once as <save>.bak.\n");
+     for (i = 0; i < 4; i++) put(&o, "p%d_rom=%s\np%d_save=%s\n", i + 1, s->gb_rom[i], i + 1, s->gb_save[i]);

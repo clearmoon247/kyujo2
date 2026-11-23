@@ -1,0 +1,94 @@
+--- a/ultramodern/src/events.cpp
++++ b/ultramodern/src/events.cpp
+@@ -49,6 +49,8 @@
+     uint32_t state;
+     uint32_t control;
+     int retrace_count = 1;
++    float x_scale = 1.0f;
++    float y_scale = 1.0f;
+ };
+ 
+ #define VI_STATE_BLACK 0x20
+@@ -88,8 +90,21 @@
+                 hStart = 0;
+             }
+ 
+-            uint32_t yScale = field_regs->yScale;
++            // osViSetXScale and osViSetYScale multiply the scale field (bits 0-11); the offset field is unchanged.
++            auto scaled = [](uint32_t reg, float factor) {
++                if (factor == 1.0f) {
++                    return reg;
++                }
++                return (reg & ~0xFFFu) | (static_cast<uint32_t>(factor * static_cast<float>(reg & 0xFFFu)) & 0xFFFu);
++            };
++            uint32_t xScale = scaled(common_regs->xScale, next_state->x_scale);
++            uint32_t yScale = scaled(field_regs->yScale, next_state->y_scale);
++            if (yScale == 0 && std::getenv("KYUJO2_TRACE_VI")) {
++                static int told;
++                if (told++ < 5) fprintf(stderr, "VI yScale 0: field %d reg %08x factor %f state %08x mode %p\n", field, field_regs->yScale, next_state->y_scale, next_state->state, (const void*)next_mode);
++            }
+             if (next_state->state & VI_STATE_REPEATLINE) {
++                if (std::getenv("KYUJO2_TRACE_VI")) { static int told; if (told++ < 3) fprintf(stderr, "VI repeat line state %08x\n", next_state->state); }
+                 yScale = 0;
+                 origin = framebuffer;
+             }
+@@ -107,8 +122,8 @@
+             regs.VI_V_START_REG = field_regs->vStart; // TODO implement osViExtendVStart
+             regs.VI_V_BURST_REG = field_regs->vBurst;
+             regs.VI_INTR_REG = field_regs->vIntr;
+-            regs.VI_X_SCALE_REG = common_regs->xScale; // TODO implement osViSetXScale
+-            regs.VI_Y_SCALE_REG = yScale; // TODO implement osViSetYScale
++            regs.VI_X_SCALE_REG = xScale;
++            regs.VI_Y_SCALE_REG = yScale;
+             regs.VI_STATUS_REG = next_state->control;
+             
+             // Swap VI states.
+@@ -470,6 +485,14 @@
+     ViState* next_state = events_context.vi.get_next_state();
+     next_state->mode = mode;
+     next_state->control = next_state->mode->comRegs.ctrl;
++    if (std::getenv("KYUJO2_TRACE_VI")) {
++        const uint32_t* words = reinterpret_cast<const uint32_t*>(mode);
++        fprintf(stderr, "osViSetMode %08x:", (uint32_t)mode_);
++        for (int i = 0; i < 20; i++) fprintf(stderr, " %08x", words[i]);
++        fprintf(stderr, "\n");
++    }
++    next_state->x_scale = 1.0f;
++    next_state->y_scale = 1.0f;
+ }
+ 
+ #define OS_VI_GAMMA_ON          0x0001
+@@ -532,6 +555,9 @@
+ }
+ 
+ extern "C" void osViRepeatLine(uint8_t active) {
++    if (std::getenv("KYUJO2_TRACE_VI")) {
++        fprintf(stderr, "osViRepeatLine(%d)\n", active);
++    }
+     std::lock_guard lock{ events_context.message_mutex };
+     ViState* next_state = events_context.vi.get_next_state();
+     uint32_t* state_out = &next_state->state;
+@@ -543,15 +569,19 @@
+ }
+ 
+ extern "C" void osViSetXScale(float scale) {
+-    if (scale != 1.0f) {
+-        assert(false);
++    if (std::getenv("KYUJO2_TRACE_VI")) {
++        fprintf(stderr, "osViSetXScale(%f)\n", scale);
+     }
++    std::lock_guard lock{ events_context.message_mutex };
++    events_context.vi.get_next_state()->x_scale = scale;
+ }
+ 
+ extern "C" void osViSetYScale(float scale) {
+-    if (scale != 1.0f) {
+-        assert(false);
++    if (std::getenv("KYUJO2_TRACE_VI")) {
++        fprintf(stderr, "osViSetYScale(%f)\n", scale);
+     }
++    std::lock_guard lock{ events_context.message_mutex };
++    events_context.vi.get_next_state()->y_scale = scale;
+ }
+ 
+ extern "C" PTR(void) osViGetNextFramebuffer() {

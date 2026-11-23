@@ -1,0 +1,13 @@
+# GB Tower's fragment 89 (ROM 0x15877A0) carries three RSP programs that its Game Boy core runs as boot
+# microcode (task type 2 with zero ucode and ucode_size). This one lies at fragment offsets 0x2cd40-0x2d86c.
+text_offset = 0x15b44e0
+text_size = 0xb30
+text_address = 0x1000
+rom_file_path = "../source/pokestadiumgs-master/baseroms/us/baserom.z64"
+output_file_path = "../build/rsp/us-gbcore-b.cpp"
+output_function_name = "kyujo2_us_gbcore_b"
+# The core names return labels with addiu $ra, $zero, label.
+extra_indirect_branch_targets = [
+    0x116c, 0x1190, 0x1228, 0x1370, 0x1390, 0x1458, 0x14fc, 0x1548,
+    0x1594, 0x161c, 0x163c, 0x18b0,
+]

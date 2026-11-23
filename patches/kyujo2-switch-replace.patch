@@ -1,0 +1,28 @@
+diff --git a/host_settings.c b/host_settings.c
+index 957838b..d35af91 100644
+--- a/host_settings.c
++++ b/host_settings.c
+@@ -418,6 +418,9 @@ int host_settings_save(const HostSettings *s, const char *path)
+ #ifdef _WIN32
+     if (!MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING)) { fprintf(stderr, "kyujo: settings: cannot replace '%s'\n", path); return 1; }   /* rename() would refuse to replace */
+ #else
++#ifdef __SWITCH__
++    remove(path);                                                   /* the SD card's rename() does not replace an existing file */
++#endif
+     if (rename(tmp, path) != 0) { fprintf(stderr, "kyujo: settings: cannot replace '%s'\n", path); return 1; }
+ #endif
+     return 0;
+diff --git a/host_gbpak.c b/host_gbpak.c
+index 5504ba3..fa5b35e 100644
+--- a/host_gbpak.c
++++ b/host_gbpak.c
+@@ -180,6 +180,9 @@ static void flush_one(GbPak *p)
+         return;
+     }
+ #else
++#ifdef __SWITCH__
++    remove(p->save_path);                                           /* the SD card's rename() does not replace an existing file */
++#endif
+     if (rename(tmp, p->save_path) != 0) {
+         fprintf(stderr, "kyujo: Game Boy save: cannot replace %s\n", p->save_path);
+         return;

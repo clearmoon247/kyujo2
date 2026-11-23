@@ -1,0 +1,12 @@
+#define ID_PANEL 101
+#define UI_HEADING 1001
+#define UI_INFO 1002
+#define UI_PORT 1003
+#define UI_DEVICE 1004
+#define UI_ACTION 1005
+#define UI_FIRST 1006
+#define UI_SECOND 1007
+#define UI_THIRD 1008
+#define UI_DONE 1009
+#define UI_STATUS 1010
+#define UI_BACK 1011

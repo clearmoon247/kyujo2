@@ -1,0 +1,102 @@
+[input]
+elf_path = "../build/recomp-input/jp/game.elf"
+output_func_path = "../build/recompiled/jp"
+entrypoint = 0x80000400
+functions_per_output_file = 100
+
+# The two-instruction abs.s entry is nested in the assembly for func_8000B6C0.
+# libultra's weak aliases have size zero; their strong definitions provide the lengths.
+function_sizes = [
+    { name = "func_8000B690", size = 8 },
+    { name = "bcopy", size = 772 },
+    { name = "cosf", size = 360 },
+    # Handwritten transform routines in src/unk_220C0.s use glabel without ELF sizes.
+    { name = "func_800213E0", size = 0xF4 },
+    { name = "func_800214D4", size = 0x280 },
+    { name = "func_80021754", size = 0x28C },
+    { name = "trigger_fault", size = 12 },
+    { name = "set_watch_lohi", size = 16 },
+    # Splat labels the middle of this loop as func_86707A88. A branch from
+    # 0x867079B8 reaches 0x86707AF0 before the shared return at 0x86707E28.
+    { name = "func_86706E34", size = 0xFF8 },
+    # Include the shared return cases of the JP dispatch table.
+    { name = "func_800653F0", size = 0x60 },
+]
+
+[patches]
+# WatchLo and WatchHi are guest CPU debug registers. The host supplies this entry.
+# IPL3 executes on the console before the game entrypoint. The host supplies the initial machine state.
+ignored = [
+    "func_A4000974", "func_A4000040", "func_A4000660", "func_A4000AC4",
+    "func_A400076C", "func_A4000900", "func_A4000658", "func_A4000874", "func_A4000A34",
+    "set_watch_lohi", "func_800213E0", "func_800214D4", "func_80021754", "func_800214CC", "func_80021588", "func_80021590", "func_800218A8", "func_8002194C", "func_80021964", "func_80021974", "func_8002198C"]
+
+# These loads are PI bus transactions. Keep the game's mask, branches, and comparison.
+[[patches.instruction]]
+func = "func_80065680"
+vram = 0x80065698
+value = 0
+[[patches.hook]]
+func = "func_80065680"
+before_vram = 0x80065698
+text = "ctx->r15 = stadium2_pi_status(rdram, ctx);"
+[[patches.instruction]]
+func = "func_80065680"
+vram = 0x800656B0
+value = 0
+[[patches.hook]]
+func = "func_80065680"
+before_vram = 0x800656B0
+text = "ctx->r8 = S32(stadium2_read_cart_word(0xE38));"
+
+# The guest loader knows the physical pool allocation before it relocates the fragment.
+[[patches.hook]]
+func = "func_80002200"
+before_vram = 0x80002200
+text = "stadium2_fragment_load(rdram, ctx);"
+[[patches.hook]]
+func = "func_800046A0"
+before_vram = 0x800046A0
+text = "stadium2_fragment_free(rdram, ctx);"
+
+# The game's private copy of osAiSetNextBuffer writes AI_STATUS, DRAM_ADDR and LEN.
+# The host runtime accepts the original buffer without the console DMA erratum.
+[[patches.hook]]
+func = "func_800194E0"
+before_vram = 0x800194E0
+text = "osAiSetNextBuffer_recomp(rdram, ctx); return;"
+
+# Game Thread 6 polls the retrace counter in a delay-slot loop. External VI messages
+# drive the thread that increments it. Let the cooperative OS deliver them.
+[[patches.hook]]
+func = "func_800353B4"
+before_vram = 0x80035434
+text = "if (ctx->r16 == ctx->r8) yield_self_1ms(rdram);"
+[[patches.hook]]
+func = "func_800353B4"
+before_vram = 0x80035480
+text = "if (ctx->r2 == ctx->r10) yield_self_1ms(rdram);"
+
+# The asset-loading game thread waits for another guest thread to signal completion.
+[[patches.hook]]
+func = "func_80003AD0"
+before_vram = 0x80003BC8
+text = "if (ctx->r2 == 0) yield_self_1ms(rdram);"
+
+# The cartridge has four more loops with the identical call, NOP, branch-back, NOP sequence.
+[[patches.hook]]
+func = "func_8000850C"
+before_vram = 0x8000852C
+text = "if (ctx->r2 == 0) yield_self_1ms(rdram);"
+[[patches.hook]]
+func = "func_8830032C"
+before_vram = 0x88300388
+text = "if (ctx->r2 == 0) yield_self_1ms(rdram);"
+[[patches.hook]]
+func = "func_8870076C"
+before_vram = 0x88700798
+text = "if (ctx->r2 == 0) yield_self_1ms(rdram);"
+[[patches.hook]]
+func = "func_88900F54"
+before_vram = 0x88901378
+text = "if (ctx->r2 == 0) yield_self_1ms(rdram);"

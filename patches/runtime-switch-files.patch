@@ -1,0 +1,29 @@
+diff --git a/librecomp/src/files.cpp b/librecomp/src/files.cpp
+index af6f18d..e07be54 100644
+--- a/librecomp/src/files.cpp
++++ b/librecomp/src/files.cpp
+@@ -36,6 +36,24 @@ bool recomp::finalize_output_file_with_backup(const std::filesystem::path& filep
+     temp_path += temp_suffix;
+ 
+     std::error_code ec;
++#ifdef __SWITCH__
++    // On the Switch every file reports the same device and inode numbers, so libstdc++'s copy_file takes any existing
++    // destination for the source file itself and refuses to overwrite it, and rename() does not replace a file. The
++    // save is moved aside as the backup instead, then the new file is renamed into place. If the program stops in
++    // between, open_input_file_with_backup reads the backup.
++    if (std::filesystem::exists(temp_path, ec)) {
++        std::filesystem::remove(backup_path, ec);
++        if (std::filesystem::exists(filepath, ec)) {
++            std::filesystem::rename(filepath, backup_path, ec);
++            if (ec) {
++                return false;
++            }
++        }
++        std::filesystem::rename(temp_path, filepath, ec);
++        return !ec;
++    }
++    return false;
++#endif
+     if (std::filesystem::exists(filepath, ec)) {
+         std::filesystem::copy_file(filepath, backup_path, std::filesystem::copy_options::overwrite_existing, ec);
+         if (ec) {

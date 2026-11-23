@@ -1,0 +1,194 @@
+[input]
+elf_path = "../build/recomp-input/us/game.elf"
+output_func_path = "../build/recompiled/us"
+entrypoint = 0x80000400
+functions_per_output_file = 100
+
+# The two-instruction abs.s entry is nested in the assembly for func_8000B6C0.
+# libultra's weak aliases have size zero; their strong definitions provide the lengths.
+function_sizes = [
+    { name = "func_8000B770", size = 8 },
+    { name = "bcopy", size = 772 },
+    { name = "cosf", size = 360 },
+    # Handwritten transform routines in src/unk_220C0.s use glabel without ELF sizes.
+    { name = "func_800214C0", size = 0xF4 },
+    { name = "func_800215B4", size = 0x280 },
+    { name = "func_80021834", size = 0x28C },
+    { name = "trigger_fault", size = 12 },
+    { name = "set_watch_lohi", size = 16 },
+    # jtbl_800A5318 reaches the separately labeled return cases at 0x800649CC and 0x800649D4.
+    { name = "func_80064980", size = 0x60 },
+]
+
+[patches]
+# WatchLo and WatchHi are guest CPU debug registers. The host supplies this entry.
+ignored = ["set_watch_lohi", "func_800214C0", "func_800215B4", "func_80021834"]
+
+# These loads are PI bus transactions. Keep the game's mask, branches, and comparison.
+[[patches.instruction]]
+func = "func_80064C20"
+vram = 0x80064C38
+value = 0
+[[patches.hook]]
+func = "func_80064C20"
+before_vram = 0x80064C38
+text = "ctx->r15 = stadium2_pi_status(rdram, ctx);"
+[[patches.instruction]]
+func = "func_80064C20"
+vram = 0x80064C50
+value = 0
+[[patches.hook]]
+func = "func_80064C20"
+before_vram = 0x80064C50
+text = "ctx->r8 = S32(stadium2_read_cart_word(0xE38));"
+
+# Post-battle and related game checks use the same PI bus as the boot check.
+[[patches.instruction]]
+func = "func_82604390"
+vram = 0x826043A8
+value = 0
+[[patches.hook]]
+func = "func_82604390"
+before_vram = 0x826043A8
+text = "ctx->r15 = stadium2_pi_status(rdram, ctx);"
+[[patches.instruction]]
+func = "func_82604390"
+vram = 0x826043C0
+value = 0
+[[patches.hook]]
+func = "func_82604390"
+before_vram = 0x826043C0
+text = "ctx->r8 = S32(stadium2_read_cart_word(0x800));"
+
+[[patches.instruction]]
+func = "func_82700DD0"
+vram = 0x82700DE8
+value = 0
+[[patches.hook]]
+func = "func_82700DD0"
+before_vram = 0x82700DE8
+text = "ctx->r15 = stadium2_pi_status(rdram, ctx);"
+[[patches.instruction]]
+func = "func_82700DD0"
+vram = 0x82700E00
+value = 0
+[[patches.hook]]
+func = "func_82700DD0"
+before_vram = 0x82700E00
+text = "ctx->r8 = S32(stadium2_read_cart_word(0xD10));"
+
+[[patches.instruction]]
+func = "func_80069750"
+vram = 0x80069768
+value = 0
+[[patches.hook]]
+func = "func_80069750"
+before_vram = 0x80069768
+text = "ctx->r15 = stadium2_pi_status(rdram, ctx);"
+[[patches.instruction]]
+func = "func_80069750"
+vram = 0x80069780
+value = 0
+[[patches.hook]]
+func = "func_80069750"
+before_vram = 0x80069780
+text = "ctx->r8 = S32(stadium2_read_cart_word(0x504));"
+
+# The main pool allocator tells the GPU renderer which memory it is about to hand out (native/trace.cpp).
+[[patches.hook]]
+func = "func_80002740"
+before_vram = 0x80002740
+text = "stadium2_pool_alloc(rdram, ctx);"
+
+# The guest loader knows the physical pool allocation before it relocates the fragment.
+[[patches.hook]]
+func = "func_80002210"
+before_vram = 0x80002210
+text = "stadium2_fragment_load(rdram, ctx);"
+[[patches.hook]]
+func = "func_800046C0"
+before_vram = 0x800046C0
+text = "stadium2_fragment_free(rdram, ctx);"
+
+# The game's private copy of osAiSetNextBuffer writes AI_STATUS, DRAM_ADDR and LEN.
+# The host runtime accepts the original buffer without the console DMA erratum.
+[[patches.hook]]
+func = "func_800195C0"
+before_vram = 0x800195C0
+text = "osAiSetNextBuffer_recomp(rdram, ctx); return;"
+
+# The Game Boy core in fragment 89 has its own copy of the same routine.
+[[patches.hook]]
+func = "func_8150DFA0"
+before_vram = 0x8150DFA0
+text = "osAiSetNextBuffer_recomp(rdram, ctx); return;"
+
+# The Game Boy core's instruction dispatcher (fragment 89) runs without blocking while the cartridge is still
+# loading over the Transfer Pak. Under the cooperative scheduler the loading thread would never run.
+[[patches.hook]]
+func = "func_8150A838"
+before_vram = 0x8150A838
+text = "stadium2_gb_core_tick(rdram, ctx);"
+
+# Game Thread 6 polls D_8009486C in a delay-slot loop. External VI messages
+# drive the thread that increments it. Let the cooperative OS deliver them.
+[[patches.hook]]
+func = "func_800354B4"
+before_vram = 0x80035534
+text = "if (ctx->r16 == ctx->r8) yield_self_1ms(rdram);"
+[[patches.hook]]
+func = "func_800354B4"
+before_vram = 0x80035580
+text = "if (ctx->r2 == ctx->r10) yield_self_1ms(rdram);"
+
+# GB Tower waits here until its scene objects have retired. The objects are retired by other guest threads,
+# which the cooperative OS cannot run while this thread spins.
+[[patches.hook]]
+func = "func_800353E4"
+before_vram = 0x80035408
+text = "if (ctx->r2 != 0) yield_self_1ms(rdram);"
+
+# The asset-loading game thread waits for another guest thread to signal completion.
+[[patches.hook]]
+func = "func_80003AF0"
+before_vram = 0x80003BE8
+text = "if (ctx->r2 == 0) yield_self_1ms(rdram);"
+
+# The cartridge has four more loops with the identical call, NOP, branch-back, NOP sequence.
+[[patches.hook]]
+func = "func_800085EC"
+before_vram = 0x8000860C
+text = "if (ctx->r2 == 0) yield_self_1ms(rdram);"
+[[patches.hook]]
+func = "func_8830032C"
+before_vram = 0x88300388
+text = "if (ctx->r2 == 0) yield_self_1ms(rdram);"
+[[patches.hook]]
+func = "func_887009A0"
+before_vram = 0x887009CC
+text = "if (ctx->r2 == 0) yield_self_1ms(rdram);"
+[[patches.hook]]
+func = "func_88900F54"
+before_vram = 0x88901378
+text = "if (ctx->r2 == 0) yield_self_1ms(rdram);"
+
+# Every battle-script command of a move goes through this dispatcher (s0 is the command number). The knockout
+# cheat uses it to act on any move, including moves that miss or do no damage.
+[[patches.hook]]
+func = "func_841315C4"
+before_vram = 0x84131618
+text = "stadium2_battle_command(rdram, ctx);"
+[[patches.hook]]
+func = "func_841315C4"
+before_vram = 0x84131648
+text = "if (stadium2_knockout_rerun(rdram, ctx)) goto L_84131610;"
+
+# At this point the US battle engine has selected a real target and positive damage.
+# Leave the original clamp, HP subtraction, damage record and faint animation intact.
+[[patches.hook]]
+func = "func_84128954"
+before_vram = 0x84128AC8
+text = """
+    extern void stadium2_apply_knockout(uint8_t*, recomp_context*);
+    stadium2_apply_knockout(rdram, ctx);
+"""

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Kyujo2
+Exec=Kyujo2 %f
+Icon=org.kyujo2.Kyujo2
+Categories=Game;
+Terminal=false

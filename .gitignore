@@ -1,0 +1,24 @@
+# Generated, downloaded or user-supplied: never commit (see NOTICE.md)
+/.work/
+/source/
+/build/
+/dist/
+/other_projects/
+*.z64
+*.n64
+*.v64
+*.gb
+*.gbc
+*.sav
+*.srm
+*.nro
+*.nacp
+*.elf
+*.apk
+*.AppImage
+*.flatpak
+*.jks
+__pycache__/
+*.pyc
+kyujo-sdl-log*.txt
+shader-keys.bin

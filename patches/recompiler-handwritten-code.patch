@@ -1,0 +1,271 @@
+diff --git a/RSPRecomp/src/rsp_recomp.cpp b/RSPRecomp/src/rsp_recomp.cpp
+index 518477d..f61118a 100644
+--- a/RSPRecomp/src/rsp_recomp.cpp
++++ b/RSPRecomp/src/rsp_recomp.cpp
+@@ -133,6 +133,11 @@ uint32_t expected_c0_reg_value(int cop0_reg) {
+         return 0; // Always acquire the semaphore
+     case Cop0Reg::RSP_COP0_DPC_STATUS:
+         return 0; // Good enough for the microcodes that would be recompiled (i.e. non-graphics ones)
++    case Cop0Reg::RSP_COP0_DPC_CLOCK:
++    case Cop0Reg::RSP_COP0_DPC_BUFBUSY:
++    case Cop0Reg::RSP_COP0_DPC_PIPEBUSY:
++    case Cop0Reg::RSP_COP0_DPC_TMEM:
++        return 0; // RDP performance counters, which the software renderer does not provide
+     default:
+         fmt::print(stderr, "Unhandled mfc0: {}\n", cop0_reg);
+         throw std::runtime_error("Unhandled mfc0");
+@@ -190,7 +195,7 @@ BranchTargets get_branch_targets(const std::vector<rabbitizer::InstructionRsp>&
+         if (instr.isJumpWithAddress() || instr.isBranch()) {
+             ret.direct_targets.insert(instr.getBranchVramGeneric() & rsp_mem_mask);
+         }
+-        if (instr.doesLink()) {
++        if (instr.doesLink() || instr.getUniqueId() == InstrId::rsp_bgezal || instr.getUniqueId() == InstrId::rsp_bltzal) {
+             ret.indirect_targets.insert(instr.getVram() + 2 * instr_size);
+         }
+     }
+@@ -528,6 +533,19 @@ bool process_instruction(size_t instr_index, const std::vector<rabbitizer::Instr
+             print_branch_condition("if (RSP_SIGNED({}{}) < 0)", ctx_gpr_prefix(rs), rs);
+             print_branch("goto L_{:04X}", branch_target);
+             break;
++        case InstrId::rsp_bgezal:
++            // The link register is written whether or not the branch is taken.
++            print_line("{}{} = 0x{:04X}", ctx_gpr_prefix(31), 31, instr_vram + 2 * instr_size);
++            print_indent();
++            print_branch_condition("if (RSP_SIGNED({}{}) >= 0)", ctx_gpr_prefix(rs), rs);
++            print_branch("goto L_{:04X}", branch_target);
++            break;
++        case InstrId::rsp_bltzal:
++            print_line("{}{} = 0x{:04X}", ctx_gpr_prefix(31), 31, instr_vram + 2 * instr_size);
++            print_indent();
++            print_branch_condition("if (RSP_SIGNED({}{}) < 0)", ctx_gpr_prefix(rs), rs);
++            print_branch("goto L_{:04X}", branch_target);
++            break;
+         case InstrId::rsp_break:
+             print_line("return RspExitReason::Broke", instr_vram);
+             break;
+diff --git a/src/analysis.cpp b/src/analysis.cpp
+index 1608da9..b619d67 100644
+--- a/src/analysis.cpp
++++ b/src/analysis.cpp
+@@ -346,8 +346,12 @@ bool N64Recomp::analyze_function(const N64Recomp::Context& context, const N64Rec
+         }
+ 
+         if (cur_jtbl.entries.size() == 0) {
+-            fmt::print("Failed to determine size of jump table at 0x{:08X} for instruction at 0x{:08X}\n", cur_jtbl.vram, cur_jtbl.jr_vram);
+-            return false;
++            // A table of function pointers loaded through the same instruction pattern is not a switch.
++            // Its jump is an indirect tail call.
++            fmt::print("[Info] Load before the jump at 0x{:08X} is not a switch table; treating it as an indirect call\n", cur_jtbl.jr_vram);
++            stats.jump_tables.erase(stats.jump_tables.begin() + i);
++            i--;
++            continue;
+         }
+ 
+         //fmt::print("Jtbl at 0x{:08X} (rom 0x{:08X}) with {} entries used by instr at 0x{:08X}\n", cur_jtbl.vram, cur_jtbl.rom, cur_jtbl.entries.size(), cur_jtbl.jr_vram);
+diff --git a/src/recompilation.cpp b/src/recompilation.cpp
+index 4a631b5..2470d7f 100644
+--- a/src/recompilation.cpp
++++ b/src/recompilation.cpp
+@@ -236,6 +236,24 @@ bool process_instruction(GeneratorType& generator, const N64Recomp::Context& con
+         return true;
+     };
+ 
++    // The cartridge's hand-written Game Boy core treats $ra as a general register. Calls record their
++    // return address on a per-thread stack so that a jump through $ra either returns to the C caller (the
++    // value is what the call left) or enters the code address that the routine placed in $ra.
++    const bool track_ra = context.sections[func.section_index].name == ".fragment89";
++    auto emit_ra_push = [&]() {
++        if (track_ra) {
++            print_indent();
++            fmt::print(output_file, "stadium2_ra_push(&ctx->r31, S32(section_addresses[{}] + {:#X}));\n", func.section_index,
++                instr_vram + 8 - section.ram_addr);
++        }
++    };
++    auto emit_ra_pop = [&]() {
++        if (track_ra) {
++            print_indent();
++            fmt::print(output_file, "if (stadium2_ra_pop()) return;\n");
++        }
++    };
++
+     auto print_link_branch = [&]() {
+         if (needs_link_branch) {
+             print_indent();
+@@ -247,6 +265,11 @@ bool process_instruction(GeneratorType& generator, const N64Recomp::Context& con
+         if (!process_delay_slot(false)) {
+             return false;
+         }
++        if (track_ra) {
++            print_indent();
++            fmt::print(output_file, "if (!stadium2_ra_is_return(ctx->r31, section_addresses[{}], {:#X})) {{ STADIUM2_TAIL(LOOKUP_FUNC(ctx->r31)); }}\n",
++                func.section_index, section.size);
++        }
+         print_indent();
+         generator.emit_return(context, func_index);
+         print_link_branch();
+@@ -263,17 +286,23 @@ bool process_instruction(GeneratorType& generator, const N64Recomp::Context& con
+         return true;
+     };
+ 
+-    auto print_func_call_by_register = [&](int reg) {
++    auto print_func_call_by_register = [&](int reg, bool tail_call = false) {
+         if (!process_delay_slot(false)) {
+             return false;
+         }
++        if (!tail_call) {
++            emit_ra_push();
++        }
+         print_indent();
+         generator.emit_function_call_by_register(reg);
++        if (!tail_call) {
++            emit_ra_pop();
++        }
+         print_link_branch();
+         return true;
+     };
+ 
+-    auto print_func_call_by_address = [&generator, reloc_target_section_offset, has_reloc, reloc_section, reloc_reference_symbol, reloc_type, &context, &func, &static_funcs_out, &needs_link_branch, &print_indent, &process_delay_slot, &print_link_branch]
++    auto print_func_call_by_address = [&generator, reloc_target_section_offset, has_reloc, reloc_section, reloc_reference_symbol, reloc_type, &context, &func, &static_funcs_out, &needs_link_branch, &print_indent, &process_delay_slot, &print_link_branch, &emit_ra_push, &emit_ra_pop]
+         (uint32_t target_func_vram, bool tail_call = false, bool indent = false)
+     {
+         bool call_by_lookup = false;
+@@ -352,6 +381,9 @@ bool process_instruction(GeneratorType& generator, const N64Recomp::Context& con
+             if (!process_delay_slot(false)) {
+                 return false;
+             }
++            if (!tail_call) {
++                emit_ra_push();
++            }
+             print_indent();
+             if (reloc_reference_symbol != (size_t)-1) {
+                 generator.emit_function_call_reference_symbol(context, reloc_section, reloc_reference_symbol, reloc_target_section_offset);
+@@ -365,6 +397,9 @@ bool process_instruction(GeneratorType& generator, const N64Recomp::Context& con
+             else {
+                 generator.emit_function_call(context, matched_func_index);
+             }
++            if (!tail_call) {
++                emit_ra_pop();
++            }
+             print_link_branch();
+         }
+         return true;
+@@ -492,10 +527,60 @@ bool process_instruction(GeneratorType& generator, const N64Recomp::Context& con
+         }
+         break;
+     case InstrId::cpu_jalr:
+-        // jalr can only be handled with $ra as the return address register
++        // Hand-written code can link through another register (jalr $v1, $t0). The instruction after the delay
++        // slot is a continuation function, so the link register receives its address and the target is entered
++        // as a tail call. The callee's own jump through the link register enters the continuation.
++        if (track_ra) {
++            // The Game Boy core's handlers never return to the instruction after a jalr: they jump into the
++            // dispatcher instead. Entering a fragment routine through a C call would nest one more C frame for
++            // every emulated instruction, so a target inside the fragment is a tail call. Resident code is
++            // called normally and then continues in the continuation.
++            if (!process_delay_slot(false)) {
++                return false;
++            }
++            if (rd != 0) {
++                print_indent();
++                fmt::print(output_file, "ctx->r{} = S32(section_addresses[{}] + {:#X});\n", rd, func.section_index,
++                    instr_vram + 8 - section.ram_addr);
++            }
++            print_indent();
++            // STADIUM2_TAIL forces a jump: clang otherwise merges this call with the identical call below and
++            // keeps one ordinary call, which grows the host stack by a frame per emulated instruction.
++            fmt::print(output_file, "if (stadium2_in_fragment(ctx->r{}, section_addresses[{}], {:#X})) {{\n", rs, func.section_index, section.size);
++            print_indent();
++            print_indent();
++            fmt::print(output_file, "STADIUM2_TAIL(LOOKUP_FUNC(ctx->r{}));\n", rs);
++            print_indent();
++            fmt::print(output_file, "}}\n");
++            print_indent();
++            generator.emit_function_call_by_register(rs);
++            auto continuation = context.functions_by_vram.find(instr_vram + 8);
++            if (continuation != context.functions_by_vram.end()) {
++                print_indent();
++                generator.emit_function_call(context, continuation->second.front());
++            }
++            print_indent();
++            generator.emit_return(context, func_index);
++            break;
++        }
+         if (rd != (int)rabbitizer::Registers::Cpu::GprO32::GPR_O32_ra) {
+-            fmt::print(stderr, "Invalid return address reg for jalr: f{}\n", rd);
+-            return false;
++            if (!process_delay_slot(false)) {
++                return false;
++            }
++            if (rd != 0) {
++                print_indent();
++                if (section.relocatable) {
++                    fmt::print(output_file, "ctx->r{} = S32(section_addresses[{}] + {:#X});\n", rd, func.section_index,
++                        instr_vram + 8 - section.ram_addr);
++                } else {
++                    fmt::print(output_file, "ctx->r{} = S32({:#X});\n", rd, instr_vram + 8);
++                }
++            }
++            print_indent();
++            generator.emit_function_call_by_register(rs);
++            print_indent();
++            generator.emit_return(context, func_index);
++            break;
+         }
+         needs_link_branch = true;
+         print_func_call_by_register(rs);
+@@ -568,7 +653,18 @@ bool process_instruction(GeneratorType& generator, const N64Recomp::Context& con
+             }
+ 
+             fmt::print("[Info] Indirect tail call in {}\n", func.name);
+-            print_func_call_by_register(rs);
++            if (track_ra) {
++                // A routine that saved $ra in another register returns through it.
++                if (!process_delay_slot(false)) {
++                    return false;
++                }
++                print_indent();
++                fmt::print(output_file, "if (stadium2_ra_returns_to(ctx->r{})) return;\n", rs);
++                print_indent();
++                fmt::print(output_file, "STADIUM2_TAIL(LOOKUP_FUNC(ctx->r{}));\n", rs);
++                break;
++            }
++            print_func_call_by_register(rs, true);
+             print_indent();
+             generator.emit_return(context, func_index);
+             break;
+@@ -884,6 +980,35 @@ bool recompile_function_impl(GeneratorType& generator, const N64Recomp::Context&
+             // Advance the vram address by the size of one instruction
+             vram += 4;
+         }
++
++        // Hand-written code can continue into a label that is also an entry point. Chain into the following
++        // function when this one does not end in an unconditional transfer.
++        auto is_transfer = [](const rabbitizer::InstructionCpu& check) {
++            using Id = rabbitizer::InstrId::UniqueId;
++            const auto id = check.getUniqueId();
++            return id == Id::cpu_jr || id == Id::cpu_j || id == Id::cpu_b || id == Id::cpu_eret ||
++                (id == Id::cpu_jalr && (int)check.GetO32_rd() != (int)rabbitizer::Registers::Cpu::GprO32::GPR_O32_ra);
++        };
++        size_t last = instructions.size();
++        while (last > 0 && instructions[last - 1].getUniqueId() == rabbitizer::InstrId::UniqueId::cpu_nop) {
++            last--;
++        }
++        bool ends_in_transfer = (last >= 1 && is_transfer(instructions[last - 1])) ||
++            (last >= 2 && is_transfer(instructions[last - 2]));
++        uint32_t next_vram = func.vram + (uint32_t)(func.words.size() * sizeof(func.words[0]));
++        auto next_func = context.functions_by_vram.find(next_vram);
++        // Only the cartridge's hand-written Game Boy core needs this; the decomp's functions all end in jr $ra.
++        // A label on the final delay slot is reached by a branch and also continues, so chain even after a jump;
++        // after an unconditional transfer the call is unreachable.
++        (void)ends_in_transfer;
++        if (context.sections[func.section_index].name == ".fragment89" && last > 0 &&
++            next_func != context.functions_by_vram.end()) {
++            fmt::print("[Info] {} continues into the function at 0x{:08X}\n", func.name, next_vram);
++            fmt::print(output_file, "    ");
++            generator.emit_function_call(context, next_func->second.front());
++            fmt::print(output_file, "    ");
++            generator.emit_return(context, func_index);
++        }
+     }
+ 
+     // Terminate the function

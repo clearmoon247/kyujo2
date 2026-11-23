@@ -1,0 +1,13 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.kyujo2.boottest" android:versionCode="2" android:versionName="0.2">
+    <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34"/>
+    <application android:label="Kyujo2 Boot Test" android:allowBackup="false"
+        android:extractNativeLibs="true">
+        <activity android:name=".BootTest" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

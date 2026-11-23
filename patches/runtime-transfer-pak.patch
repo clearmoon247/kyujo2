@@ -1,0 +1,13 @@
+diff --git a/ultramodern/include/ultramodern/input.hpp b/ultramodern/include/ultramodern/input.hpp
+--- a/ultramodern/include/ultramodern/input.hpp
++++ b/ultramodern/include/ultramodern/input.hpp
+@@ -15,8 +15,7 @@ namespace ultramodern {
+         enum class Pak {
+             None,
+             RumblePak,
+-            // ControllerPak,
+-            // TransferPak
++            TransferPak
+         };
+ 
+         struct connected_device_info_t {

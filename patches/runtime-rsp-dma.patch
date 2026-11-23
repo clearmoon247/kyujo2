@@ -1,0 +1,46 @@
+--- a/librecomp/include/librecomp/rsp.hpp
++++ b/librecomp/include/librecomp/rsp.hpp
+@@ -94,21 +94,35 @@
+ #define DO_DMA_READ(rd_len) dma_rdram_to_dmem(rdram, dma_mem_address, dma_dram_address, (rd_len))
+ #define DO_DMA_WRITE(wr_len) dma_dmem_to_rdram(rdram, dma_mem_address, dma_dram_address, (wr_len))
+ 
++// SP_RD_LEN and SP_WR_LEN hold the row length minus one in bits 0-11, the row count minus one in bits 12-19 and
++// the number of bytes to skip in RDRAM after each row in bits 20-31. Plain transfers use a single row.
+ static inline void dma_rdram_to_dmem(uint8_t* rdram, uint32_t dmem_addr, uint32_t dram_addr, uint32_t rd_len) {
+-    rd_len += 1; // Read length is inclusive
++    const uint32_t length = (rd_len & 0xFFF) + 1;
++    const uint32_t rows = ((rd_len >> 12) & 0xFF) + 1;
++    const uint32_t skip = (rd_len >> 20) & 0xFFF;
+     dram_addr &= 0xFFFFF8;
+-    assert(dmem_addr + rd_len <= 0x1000);
+-    for (uint32_t i = 0; i < rd_len; i++) {
+-        RSP_MEM_B(i, dmem_addr) = MEM_B(0, (int64_t)(int32_t)(dram_addr + i + 0x80000000));
++    assert(dmem_addr + length * rows <= 0x1000);
++    for (uint32_t row = 0; row < rows; row++) {
++        for (uint32_t i = 0; i < length; i++) {
++            RSP_MEM_B(i, dmem_addr) = MEM_B(0, (int64_t)(int32_t)(dram_addr + i + 0x80000000));
++        }
++        dmem_addr += length;
++        dram_addr += length + skip;
+     }
+ }
+ 
+ static inline void dma_dmem_to_rdram(uint8_t* rdram, uint32_t dmem_addr, uint32_t dram_addr, uint32_t wr_len) {
+-    wr_len += 1; // Write length is inclusive
++    const uint32_t length = (wr_len & 0xFFF) + 1;
++    const uint32_t rows = ((wr_len >> 12) & 0xFF) + 1;
++    const uint32_t skip = (wr_len >> 20) & 0xFFF;
+     dram_addr &= 0xFFFFF8;
+-    assert(dmem_addr + wr_len <= 0x1000);
+-    for (uint32_t i = 0; i < wr_len; i++) {
+-        MEM_B(0, (int64_t)(int32_t)(dram_addr + i + 0x80000000)) = RSP_MEM_B(i, dmem_addr);
++    assert(dmem_addr + length * rows <= 0x1000);
++    for (uint32_t row = 0; row < rows; row++) {
++        for (uint32_t i = 0; i < length; i++) {
++            MEM_B(0, (int64_t)(int32_t)(dram_addr + i + 0x80000000)) = RSP_MEM_B(i, dmem_addr);
++        }
++        dmem_addr += length;
++        dram_addr += length + skip;
+     }
+ }
+ 

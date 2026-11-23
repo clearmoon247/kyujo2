@@ -1,0 +1,227 @@
+--- gpu_gles.c
++++ gpu_gles.c
+@@ -30,6 +30,7 @@
+ #include "gpu_gles.h"
+ #include "rdp_gpu.h"
+ #include "rdram.h"
++#include "render_memory.h"
+ 
+ /* ---- what the render thread is doing (read by the watchdog) ------------------------------------------------------------------------ */
+ static volatile const char *gPhase = "idle";
+@@ -421,10 +422,10 @@
+     for (i = 0; i < n; i++) {
+         if (!src) { px[i * 4] = px[i * 4 + 1] = px[i * 4 + 2] = 0; px[i * 4 + 3] = 255; continue; }
+         if (bpp == 2) {
+-            unsigned v = ((unsigned)src[i * 2] << 8) | src[i * 2 + 1];
++            unsigned v = ((unsigned)GUEST_BYTE(src, i * 2) << 8) | GUEST_BYTE(src, i * 2 + 1);
+             px[i * 4] = c5to8((v >> 11) & 31); px[i * 4 + 1] = c5to8((v >> 6) & 31); px[i * 4 + 2] = c5to8((v >> 1) & 31); px[i * 4 + 3] = 255;
+         } else {
+-            px[i * 4] = src[i * 4]; px[i * 4 + 1] = src[i * 4 + 1]; px[i * 4 + 2] = src[i * 4 + 2]; px[i * 4 + 3] = 255;
++            px[i * 4] = GUEST_BYTE(src, i * 4); px[i * 4 + 1] = GUEST_BYTE(src, i * 4 + 1); px[i * 4 + 2] = GUEST_BYTE(src, i * 4 + 2); px[i * 4 + 3] = 255;
+         }
+     }
+     glBindTexture(GL_TEXTURE_2D, s->tex);
+@@ -1089,9 +1090,9 @@
+         uint8_t *d = gRdpMem + s->addr + i * bpp;
+         if (bpp == 2) {
+             unsigned v = ((unsigned)(px[i * 4] >> 3) << 11) | ((unsigned)(px[i * 4 + 1] >> 3) << 6) | ((unsigned)(px[i * 4 + 2] >> 3) << 1) | 1u;
+-            d[0] = (uint8_t)(v >> 8); d[1] = (uint8_t)v;
++            GUEST_BYTE(d, 0) = (uint8_t)(v >> 8); GUEST_BYTE(d, 1) = (uint8_t)v;
+         } else {
+-            d[0] = px[i * 4]; d[1] = px[i * 4 + 1]; d[2] = px[i * 4 + 2]; d[3] = 0xE0;
++            GUEST_BYTE(d, 0) = px[i * 4]; GUEST_BYTE(d, 1) = px[i * 4 + 1]; GUEST_BYTE(d, 2) = px[i * 4 + 2]; GUEST_BYTE(d, 3) = 0xE0;
+         }
+     }
+     free(px);
+@@ -1125,20 +1126,38 @@
+     }
+ }
+ 
+-static void do_read(Cmd *c)
++/* The colour surface that holds a picture of h rows starting at addr (row_offset rows further down). Frame buffers can lie back to back in memory, and a surface
++ * can be a little taller than its picture, so the end of one surface can cover the start of the next frame buffer. Prefer a surface that holds the whole
++ * picture, then the one that starts nearest to it, then the newest. (Kyujo2: the newest covering surface alone showed the wrong buffer, black, on every
++ * second picture of screens with two 640-wide frame buffers.) */
++static Surf *pick_surface(uint32_t addr, uint32_t stride_px, uint32_t bpp, int h, int row_offset)
+ {
+-    int i;
+-    if (gTrace > 0) fprintf(stderr, "gpu-frame origin=%06X\n", c->addr);
+     Surf *best = NULL;
+-    c->result = 0;
++    int best_fits = 0, i;
+     for (i = 0; i < gSurfN; i++) {
+         Surf *s = &gSurf[i];
+         uint32_t bytes = s->width * (uint32_t)s->h * (s->siz == 3 ? 4u : 2u);
+-        if (s->width != c->stride_px || (s->siz == 3 ? 4u : 2u) != c->bpp) continue;
+-        if (c->addr < s->addr || c->addr >= s->addr + bytes) continue;
+-        if ((c->addr - s->addr) % c->bpp) continue;
+-        if (!best || s->serial > best->serial) best = s;
++        int row, fits;
++        if (s->width != stride_px || (s->siz == 3 ? 4u : 2u) != bpp) continue;
++        if (addr < s->addr || addr >= s->addr + bytes) continue;
++        if ((addr - s->addr) % bpp) continue;
++        row = (int)((addr - s->addr) / bpp / s->width) + row_offset;
++        fits = row >= -1 && row + h <= s->h + 1;
++        if (!best || fits > best_fits || (fits == best_fits && (s->addr > best->addr || (s->addr == best->addr && s->serial > best->serial)))) {
++            best = s;
++            best_fits = fits;
++        }
+     }
++    return best;
++}
++
++static void do_read(Cmd *c)
++{
++    int i;
++    if (gTrace > 0) fprintf(stderr, "gpu-frame origin=%06X\n", c->addr);
++    Surf *best = pick_surface(c->addr, c->stride_px, c->bpp, c->h, c->row_offset);
++    c->result = 0;
++    (void)i;
+     if (best) {
+         uint8_t *px = surf_read(best);
+         uint32_t off = (c->addr - best->addr) / c->bpp;
+@@ -1236,6 +1255,92 @@
+ static volatile int gStretch;
+ void gles_set_stretch(int on) { gStretch = on != 0; }
+ 
++/* Kyujo2: short messages (notices) drawn over the picture as a transparent layer, so the picture can still come straight from its surface. Before, a notice forced
++ * every picture through a read-back to game memory and an upload (a GPU stall per picture: on the Switch the battle's first seconds, when the cheat notice shows,
++ * crawled). The layer is premultiplied RGBA covering the whole picture; the render thread uploads it at the next presentation. */
++static pthread_mutex_t gOvMutex = PTHREAD_MUTEX_INITIALIZER;
++static unsigned char *gOvPending;                  /* new layer waiting for upload (guarded by gOvMutex) */
++static unsigned gOvPendingW, gOvPendingH;
++static int gOvChanged, gOvOn;                      /* gOvChanged: guarded by gOvMutex; gOvOn: render thread */
++static GLuint gOvTex, gOvProg;
++static GLint gOvLocScale;
++void gles_set_overlay(const unsigned char *rgba, unsigned w, unsigned h)
++{
++    unsigned char *copy = NULL;
++    if (rgba && w && h && (copy = (unsigned char *)malloc((size_t)w * h * 4u)) != NULL) memcpy(copy, rgba, (size_t)w * h * 4u);
++    pthread_mutex_lock(&gOvMutex);
++    free(gOvPending);
++    gOvPending = copy;
++    gOvPendingW = copy ? w : 0;
++    gOvPendingH = copy ? h : 0;
++    gOvChanged = 1;
++    pthread_mutex_unlock(&gOvMutex);
++}
++static void overlay_draw(float sx, float sy)
++{
++    pthread_mutex_lock(&gOvMutex);
++    if (gOvChanged) {
++        gOvChanged = 0;
++        gOvOn = gOvPending != NULL;
++        if (gOvOn) {
++            if (!gOvTex) {
++                glGenTextures(1, &gOvTex);
++                glBindTexture(GL_TEXTURE_2D, gOvTex);
++                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
++                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
++                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
++            }
++            glBindTexture(GL_TEXTURE_2D, gOvTex);
++            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
++            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)gOvPendingW, (GLsizei)gOvPendingH, 0, GL_RGBA, GL_UNSIGNED_BYTE, gOvPending);
++        }
++    }
++    pthread_mutex_unlock(&gOvMutex);
++    if (!gOvOn) return;
++    if (!gOvProg) {
++        static const char *vs =
++            "#version 300 es\n"
++            "uniform vec2 uScale;\n"
++            "out vec2 vUv;\n"
++            "void main() {\n"
++            "  vec2 p = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));\n"
++            "  vUv = vec2(p.x, 1.0 - p.y);\n"
++            "  gl_Position = vec4((p * 2.0 - 1.0) * uScale, 0.0, 1.0);\n"
++            "}\n";
++        static const char *fs =
++            "#version 300 es\n"
++            "precision mediump float;\n"
++            "uniform sampler2D uOv;\n"
++            "in vec2 vUv;\n"
++            "out vec4 oCol;\n"
++            "void main() { oCol = texture(uOv, vUv); }\n";
++        GLuint v = compile(GL_VERTEX_SHADER, vs), f = compile(GL_FRAGMENT_SHADER, fs);
++        GLint ok = 0;
++        if (!v || !f) { gOvOn = 0; return; }
++        gOvProg = glCreateProgram();
++        glAttachShader(gOvProg, v);
++        glAttachShader(gOvProg, f);
++        glLinkProgram(gOvProg);
++        glGetProgramiv(gOvProg, GL_LINK_STATUS, &ok);
++        glDeleteShader(v);
++        glDeleteShader(f);
++        if (!ok) { glDeleteProgram(gOvProg); gOvProg = 0; gOvOn = 0; return; }
++        gOvLocScale = glGetUniformLocation(gOvProg, "uScale");
++        glUseProgram(gOvProg);
++        glUniform1i(glGetUniformLocation(gOvProg, "uOv"), 0);
++    }
++    glUseProgram(gOvProg);
++    glActiveTexture(GL_TEXTURE0);
++    glBindTexture(GL_TEXTURE_2D, gOvTex);
++    glUniform2f(gOvLocScale, sx, sy);
++    glEnable(GL_BLEND);
++    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
++    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
++    glDisable(GL_BLEND);
++    gl_check("overlay");
++}
++
+ /* How the picture is stretched to the window: 0 smooth (plain bilinear, the default since test 22), 1 sharp (a one-window-pixel blend band between texels), 2 firm
+  * (a band two window pixels wide: between the two). Test 21 had "sharp" only and the trainer-name text looked worse on the Switch, so the player can now cycle them. */
+ static volatile int gFilterMode;
+@@ -1281,6 +1386,7 @@
+     glBindVertexArray(gVao);
+     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+     gl_check("present");
++    overlay_draw(sx, sy);
+     {   /* development: KYUJO_GPU_SHOT=dir writes every 30th window picture as a PPM (what the player would see) */
+         static int shot = -1, nshot;
+         static const char *dir;
+@@ -1331,17 +1437,9 @@
+ /* The picture the VI shows, taken from the colour surface that holds it (the same choice as do_read) and drawn straight into the window. */
+ static void do_show(Cmd *c)
+ {
+-    int i;
+-    Surf *best = NULL;
++    Surf *best;
+     if (gTrace > 0) fprintf(stderr, "gpu-frame origin=%06X (shown)\n", c->addr);
+-    for (i = 0; i < gSurfN; i++) {
+-        Surf *s = &gSurf[i];
+-        uint32_t bytes = s->width * (uint32_t)s->h * (s->siz == 3 ? 4u : 2u);
+-        if (s->width != c->stride_px || (s->siz == 3 ? 4u : 2u) != c->bpp) continue;
+-        if (c->addr < s->addr || c->addr >= s->addr + bytes) continue;
+-        if ((c->addr - s->addr) % c->bpp) continue;
+-        if (!best || s->serial > best->serial) best = s;
+-    }
++    best = pick_surface(c->addr, c->stride_px, c->bpp, c->h, c->row_offset);
+     if (best && present_ready()) {
+         uint32_t off = (c->addr - best->addr) / c->bpp;
+         float sw = (float)best->width, sh = (float)best->h;
+@@ -1510,7 +1608,7 @@
+     spl_rect(0, 0, SPL_W, SPL_H, 150, 140, 70);                        /* wallpaper without the game's tile: the middle of its two menu-background colours */
+     spl_panel(ox + (SPL_BASE_W - 200) / 2, oy + 32, 200, 73, 30, 30, 130, 170);   /* heading box: two 21 px lines 3 px apart, 14 px above and below */
+     spl_text("POKEMON", ox + SPL_BASE_W / 2, oy + 46, 3, 255, 255, 255);
+-    spl_text("STADIUM", ox + SPL_BASE_W / 2, oy + 70, 3, 255, 255, 255);
++    spl_text("STADIUM 2", ox + SPL_BASE_W / 2, oy + 70, 3, 255, 255, 255);   /* Kyujo2 */
+     spl_panel(ox + 52, oy + 130, 533, 210, 30, 30, 130, 170);          /* text box */
+     if (gNoticeOn) {                                                   /* a message (gles_show_notice): a heading, up to three lines and a caption */
+         int k;
+@@ -1739,7 +1837,13 @@
+     if (pthread_create(&gThread, NULL, render_main, NULL) != 0) return -1;
+     if (pthread_create(&gWdThread, NULL, watchdog_main, NULL) != 0) gWdThread = 0;
+     while (!gStarted) { struct timespec t = { 0, 1000000 }; nanosleep(&t, NULL); }
+-    if (gStartFailed) { pthread_join(gThread, NULL); return -1; }
++    if (gStartFailed) {
++        pthread_join(gThread, NULL);
++        gWdStop = 1;                                           /* Kyujo2: every thread is joined (the Switch needs it; see ultramodern's terminate_game_threads) */
++        if (gWdThread) pthread_join(gWdThread, NULL);
++        gWdThread = 0;
++        return -1;
++    }
+     gRunning = 1;
+     memset(&b, 0, sizeof b);
+     b.draw = gles_draw; b.fill = gles_fill; b.texture = gles_texture; b.sync_to_ram = gles_sync_to_ram; b.read_picture = gles_read_picture; b.show_picture = gles_show_picture; b.invalidate = gles_invalidate;

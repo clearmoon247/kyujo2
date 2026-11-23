@@ -1,0 +1,13 @@
+# Task type 2 points at 0x80000460 in the US main segment. Its command handler
+# addresses are the 24 halfwords at offset 0x10 in the microcode's data.
+text_offset = 0x1060
+text_size = 0x1000
+text_address = 0x1000
+rom_file_path = "../source/pokestadiumgs-master/baseroms/us/baserom.z64"
+output_file_path = "../build/rsp/us-audio.cpp"
+output_function_name = "kyujo2_us_audio"
+extra_indirect_branch_targets = [
+    0x1f80, 0x1250, 0x1154, 0x1094, 0x1e0c, 0x1514, 0x1e7c, 0x1c90,
+    0x1180, 0x1808, 0x11e8, 0x1adc, 0x1b6c, 0x1194, 0x1ef8, 0x1240,
+    0x17c0, 0x186c, 0x1a58, 0x18bc, 0x1abc, 0x1acc, 0x1a80, 0x1bd4,
+]

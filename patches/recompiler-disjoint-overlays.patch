@@ -1,0 +1,21 @@
+diff --git a/src/recompilation.cpp b/src/recompilation.cpp
+index e6761f4..4a631b5 100644
+--- a/src/recompilation.cpp
++++ b/src/recompilation.cpp
+@@ -61,7 +61,15 @@ JalResolutionResult resolve_jal(const N64Recomp::Context& context, size_t cur_se
+ 
+             // If the function's section isn't relocatable, add the function as a candidate.
+             const auto& target_func_section = context.sections[target_func.section_index];
+-            if (!target_func_section.relocatable) {
++            // A game with disjoint link-time overlay ranges can identify a cross-overlay
++            // veneer unambiguously even though the physical load address varies.
++            const auto overlaps_target = [&](const N64Recomp::Section& other) {
++                return &other != &target_func_section && other.executable &&
++                    target_func_vram >= other.ram_addr &&
++                    target_func_vram - other.ram_addr < other.size;
++            };
++            if (!target_func_section.relocatable ||
++                std::none_of(context.sections.begin(), context.sections.end(), overlaps_target)) {
+                 matched_funcs.push_back(target_func_index);
+             }
+         }

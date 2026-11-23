@@ -1,0 +1,24 @@
+--- vi_out.c
++++ vi_out.c
+@@ -12,6 +12,7 @@
+  */
+ #include <stddef.h>
+ #include <stdint.h>
++#include "render_memory.h"
+ 
+ #include "gfx.h"
+ #include "rdram.h"
+@@ -76,11 +77,11 @@
+                 continue;
+             }
+             if (bpp == 2) {
+-                unsigned v = ((unsigned)fb[0] << 8) | fb[1];
++                unsigned v = ((unsigned)GUEST_BYTE(fb, 0) << 8) | GUEST_BYTE(fb, 1);
+                 unsigned rr = (v >> 11) & 31, gg = (v >> 6) & 31, bb = (v >> 1) & 31;
+                 o[0] = (uint8_t)((rr << 3) | (rr >> 2)); o[1] = (uint8_t)((gg << 3) | (gg >> 2)); o[2] = (uint8_t)((bb << 3) | (bb >> 2));
+             } else {
+-                o[0] = fb[0]; o[1] = fb[1]; o[2] = fb[2];
++                o[0] = GUEST_BYTE(fb, 0); o[1] = GUEST_BYTE(fb, 1); o[2] = GUEST_BYTE(fb, 2);
+             }
+         }
+     }

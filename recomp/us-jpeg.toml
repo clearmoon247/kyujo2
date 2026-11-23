@@ -1,0 +1,8 @@
+# D_800851A0 loads the type-4 program at IMEM 0x1080. The next data
+# symbol after D_80085270 bounds the executable part of the task DMA.
+text_offset = 0x85e70
+text_size = 0xaf0
+text_address = 0x1080
+rom_file_path = "../source/pokestadiumgs-master/baseroms/us/baserom.z64"
+output_file_path = "../build/rsp/us-jpeg.cpp"
+output_function_name = "kyujo2_us_jpeg"

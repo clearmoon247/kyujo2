@@ -1,0 +1,45 @@
+--- recomp.h
++++ recomp.h
+@@ -92,25 +92,23 @@
+ #define SUB32(a, b) \
+     ((gpr)(int32_t)((a) - (b)))
+ 
+-#define MEM_W(offset, reg) \
+-    (*(int32_t*)(rdram + ((((reg) + (offset))) - 0xFFFFFFFF80000000)))
+-
+-#define MEM_H(offset, reg) \
+-    (*(int16_t*)(rdram + ((((reg) + (offset)) ^ 2) - 0xFFFFFFFF80000000)))
+-
+-#define MEM_B(offset, reg) \
+-    (*(int8_t*)(rdram + ((((reg) + (offset)) ^ 3) - 0xFFFFFFFF80000000)))
+-
+-#define MEM_HU(offset, reg) \
+-    (*(uint16_t*)(rdram + ((((reg) + (offset)) ^ 2) - 0xFFFFFFFF80000000)))
+-
+-#define MEM_BU(offset, reg) \
+-    (*(uint8_t*)(rdram + ((((reg) + (offset)) ^ 3) - 0xFFFFFFFF80000000)))
+-
+-#define SD(val, offset, reg) { \
+-    *(uint32_t*)(rdram + ((((reg) + (offset) + 4)) - 0xFFFFFFFF80000000)) = (uint32_t)((gpr)(val) >> 0); \
+-    *(uint32_t*)(rdram + ((((reg) + (offset) + 0)) - 0xFFFFFFFF80000000)) = (uint32_t)((gpr)(val) >> 32); \
+-}
++/* Only RDRAM is mirrored here. PI, VI and other KSEG1 devices retain their addresses. */
++static inline uint32_t stadium2_rdram_offset(gpr address) {
++    uint32_t physical = (uint32_t)address - 0xA0000000u;
++    if (physical < 0x00800000u) return physical;
++    return (uint32_t)address - 0x80000000u;
++}
++
++#define MEM_W(offset, reg) (*(int32_t*)(rdram + (stadium2_rdram_offset((reg) + (offset)) ^ 0u)))
++#define MEM_H(offset, reg) (*(int16_t*)(rdram + (stadium2_rdram_offset((reg) + (offset)) ^ 2u)))
++#define MEM_B(offset, reg) (*(int8_t*)(rdram + (stadium2_rdram_offset((reg) + (offset)) ^ 3u)))
++#define MEM_HU(offset, reg) (*(uint16_t*)(rdram + (stadium2_rdram_offset((reg) + (offset)) ^ 2u)))
++#define MEM_BU(offset, reg) (*(uint8_t*)(rdram + (stadium2_rdram_offset((reg) + (offset)) ^ 3u)))
++
++#define SD(val, offset, reg) do { \
++    MEM_W((offset) + 4, reg) = (uint32_t)(val); \
++    MEM_W((offset), reg) = (uint32_t)((gpr)(val) >> 32); \
++} while (0)
+ 
+ static inline uint64_t load_doubleword(uint8_t* rdram, gpr reg, gpr offset) {
+     uint64_t ret = 0;
